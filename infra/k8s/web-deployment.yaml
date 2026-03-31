@@ -1,0 +1,69 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web
+  namespace: cloud-manager
+  labels:
+    app: web
+    component: frontend
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: web
+  template:
+    metadata:
+      labels:
+        app: web
+        component: frontend
+    spec:
+      containers:
+        - name: web
+          image: cloud-manager/web:latest
+          ports:
+            - containerPort: 3000
+          env:
+            - name: NEXTAUTH_URL
+              value: "https://cloud-manager.example.com"
+            - name: NEXTAUTH_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: cloud-manager-secrets
+                  key: NEXTAUTH_SECRET
+            - name: NEXT_PUBLIC_GATEWAY_URL
+              value: "http://gateway-service:8080"
+          envFrom:
+            - configMapRef:
+                name: cloud-manager-config
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: 3000
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: 3000
+            initialDelaySeconds: 15
+            periodSeconds: 20
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: web-service
+  namespace: cloud-manager
+spec:
+  selector:
+    app: web
+  ports:
+    - port: 3000
+      targetPort: 3000
+  type: ClusterIP

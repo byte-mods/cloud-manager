@@ -1,0 +1,143 @@
+global:
+  environment: development
+  imageRegistry: ""
+  imagePullSecrets: []
+
+web:
+  enabled: true
+  replicas: 1
+  image:
+    repository: cloud-manager/web
+    tag: latest
+    pullPolicy: IfNotPresent
+  port: 3000
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  env:
+    NEXTAUTH_URL: "http://localhost:3000"
+
+gateway:
+  enabled: true
+  replicas: 2
+  image:
+    repository: cloud-manager/gateway
+    tag: latest
+    pullPolicy: IfNotPresent
+  port: 8080
+  resources:
+    requests:
+      cpu: 200m
+      memory: 256Mi
+    limits:
+      cpu: "1"
+      memory: 512Mi
+
+services:
+  - name: auth-service
+    port: 8081
+    replicas: 1
+    resources:
+      requests: { cpu: 100m, memory: 128Mi }
+      limits: { cpu: 500m, memory: 256Mi }
+  - name: cloud-service
+    port: 8082
+    replicas: 2
+    resources:
+      requests: { cpu: 200m, memory: 256Mi }
+      limits: { cpu: "1", memory: 512Mi }
+  - name: security-service
+    port: 8083
+    replicas: 1
+    resources:
+      requests: { cpu: 200m, memory: 256Mi }
+      limits: { cpu: "1", memory: 512Mi }
+  - name: monitoring-service
+    port: 8084
+    replicas: 1
+    resources:
+      requests: { cpu: 150m, memory: 256Mi }
+      limits: { cpu: 750m, memory: 512Mi }
+  - name: cost-service
+    port: 8085
+    replicas: 1
+    resources:
+      requests: { cpu: 100m, memory: 128Mi }
+      limits: { cpu: 500m, memory: 256Mi }
+  - name: claude-ai-service
+    port: 8086
+    replicas: 1
+    resources:
+      requests: { cpu: 200m, memory: 256Mi }
+      limits: { cpu: "1", memory: 512Mi }
+  - name: data-engineering-service
+    port: 8087
+    replicas: 1
+    resources:
+      requests: { cpu: 100m, memory: 128Mi }
+      limits: { cpu: 500m, memory: 256Mi }
+  - name: analytics-service
+    port: 8088
+    replicas: 1
+    resources:
+      requests: { cpu: 150m, memory: 256Mi }
+      limits: { cpu: 750m, memory: 512Mi }
+  - name: tutorial-service
+    port: 8089
+    replicas: 1
+    resources:
+      requests: { cpu: 100m, memory: 128Mi }
+      limits: { cpu: 500m, memory: 256Mi }
+
+ingress:
+  enabled: true
+  className: nginx
+  annotations:
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/proxy-body-size: "50m"
+  hosts:
+    - host: cloud-manager.local
+      paths:
+        - path: /
+          service: web
+        - path: /api
+          service: gateway
+  tls: []
+
+autoscaling:
+  enabled: false
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilization: 75
+
+config:
+  RUST_LOG: "info"
+  CLOUD_USE_MOCK_DATA: "true"
+  JWT_EXPIRY: "900"
+
+secrets:
+  DB_PASSWORD: ""
+  MONGO_PASSWORD: ""
+  JWT_SECRET: ""
+  NEXTAUTH_SECRET: ""
+  ANTHROPIC_API_KEY: ""
+
+postgresql:
+  enabled: true
+  host: ""
+  port: 5432
+  database: cloud_manager
+
+redis:
+  enabled: true
+  host: ""
+  port: 6379
+
+mongodb:
+  enabled: true
+  host: ""
+  port: 27017

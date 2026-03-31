@@ -1,0 +1,147 @@
+{{- if .Values.web.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "cloud-manager.fullname" . }}-web
+  labels:
+    {{- include "cloud-manager.labels" . | nindent 4 }}
+    app: web
+spec:
+  replicas: {{ .Values.web.replicas }}
+  selector:
+    matchLabels:
+      app: web
+      {{- include "cloud-manager.serviceSelectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        app: web
+        {{- include "cloud-manager.serviceSelectorLabels" . | nindent 8 }}
+    spec:
+      containers:
+        - name: web
+          image: {{ include "cloud-manager.image" .Values.web.image }}
+          ports:
+            - containerPort: {{ .Values.web.port }}
+          envFrom:
+            - configMapRef:
+                name: {{ include "cloud-manager.fullname" . }}-config
+            - secretRef:
+                name: {{ include "cloud-manager.fullname" . }}-secrets
+          {{- with .Values.web.env }}
+          env:
+            {{- range $key, $value := . }}
+            - name: {{ $key }}
+              value: {{ $value | quote }}
+            {{- end }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.web.resources | nindent 12 }}
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: {{ .Values.web.port }}
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: {{ .Values.web.port }}
+            initialDelaySeconds: 15
+            periodSeconds: 20
+{{- end }}
+---
+{{- if .Values.gateway.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "cloud-manager.fullname" . }}-gateway
+  labels:
+    {{- include "cloud-manager.labels" . | nindent 4 }}
+    app: gateway
+spec:
+  replicas: {{ .Values.gateway.replicas }}
+  selector:
+    matchLabels:
+      app: gateway
+      {{- include "cloud-manager.serviceSelectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        app: gateway
+        component: backend
+        {{- include "cloud-manager.serviceSelectorLabels" . | nindent 8 }}
+    spec:
+      containers:
+        - name: gateway
+          image: {{ include "cloud-manager.image" .Values.gateway.image }}
+          ports:
+            - containerPort: {{ .Values.gateway.port }}
+          envFrom:
+            - configMapRef:
+                name: {{ include "cloud-manager.fullname" . }}-config
+            - secretRef:
+                name: {{ include "cloud-manager.fullname" . }}-secrets
+          resources:
+            {{- toYaml .Values.gateway.resources | nindent 12 }}
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: {{ .Values.gateway.port }}
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: {{ .Values.gateway.port }}
+            initialDelaySeconds: 10
+            periodSeconds: 15
+{{- end }}
+---
+{{- range .Values.services }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "cloud-manager.fullname" $ }}-{{ .name }}
+  labels:
+    {{- include "cloud-manager.labels" $ | nindent 4 }}
+    app: {{ .name }}
+spec:
+  replicas: {{ .replicas | default 1 }}
+  selector:
+    matchLabels:
+      app: {{ .name }}
+      {{- include "cloud-manager.serviceSelectorLabels" $ | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        app: {{ .name }}
+        component: backend
+        {{- include "cloud-manager.serviceSelectorLabels" $ | nindent 8 }}
+    spec:
+      containers:
+        - name: {{ .name }}
+          image: {{ printf "%s/%s:%s" ($.Values.global.imageRegistry | default "") (printf "cloud-manager/%s" .name) "latest" }}
+          ports:
+            - containerPort: {{ .port }}
+          envFrom:
+            - configMapRef:
+                name: {{ include "cloud-manager.fullname" $ }}-config
+            - secretRef:
+                name: {{ include "cloud-manager.fullname" $ }}-secrets
+          resources:
+            {{- toYaml .resources | nindent 12 }}
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: {{ .port }}
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: {{ .port }}
+            initialDelaySeconds: 15
+            periodSeconds: 20
+---
+{{- end }}

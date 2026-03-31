@@ -1,0 +1,61 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: claude-ai-service
+  namespace: cloud-manager
+  labels:
+    app: claude-ai-service
+    component: backend
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: claude-ai-service
+  template:
+    metadata:
+      labels:
+        app: claude-ai-service
+        component: backend
+    spec:
+      containers:
+        - name: claude-ai-service
+          image: cloud-manager/claude-ai-service:latest
+          ports:
+            - containerPort: 8086
+          envFrom:
+            - configMapRef:
+                name: cloud-manager-config
+            - secretRef:
+                name: cloud-manager-secrets
+          resources:
+            requests:
+              cpu: 200m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 512Mi
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8086
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8086
+            initialDelaySeconds: 15
+            periodSeconds: 20
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: claude-ai-service
+  namespace: cloud-manager
+spec:
+  selector:
+    app: claude-ai-service
+  ports:
+    - port: 8086
+      targetPort: 8086
+  type: ClusterIP

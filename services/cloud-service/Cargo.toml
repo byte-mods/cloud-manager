@@ -1,0 +1,61 @@
+[package]
+name = "cloud-service"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+actix-web = { workspace = true }
+actix-rt = { workspace = true }
+actix-cors = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+reqwest = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+dotenv = { workspace = true }
+config = { workspace = true }
+async-trait = { workspace = true }
+
+# Shared cloud utilities
+cloud-common = { path = "../cloud-common" }
+
+# AWS SDK
+aws-config = { version = "1", features = ["behavior-version-latest"] }
+aws-sdk-ec2 = "1"
+aws-sdk-s3 = "1"
+aws-sdk-rds = "1"
+aws-sdk-elasticloadbalancingv2 = "1"
+
+# GCP (REST API via reqwest - already included)
+gcp_auth = "0.12"
+
+# Azure
+azure_identity = "0.22"
+azure_core = "0.22"
+
+# New service category SDKs
+aws-sdk-sqs = "1"
+aws-sdk-sns = "1"
+aws-sdk-ecr = "1"
+aws-sdk-autoscaling = "1"
+aws-sdk-wafv2 = "1"
+aws-sdk-kms = "1"
+aws-sdk-iam = "1"
+aws-sdk-route53 = "1"
+aws-sdk-lambda = "1"
+aws-sdk-cloudwatchlogs = "1"
+aws-sdk-eks = "1"
+aws-sdk-apigatewayv2 = "1"
+aws-sdk-cloudfront = "1"
+aws-sdk-dynamodb = "1"
+aws-sdk-elasticache = "1"
+aws-sdk-sfn = "1"
+aws-sdk-iot = "1"
+aws-sdk-sagemaker = "1"
+aws-sdk-codepipeline = "1"
+aws-sdk-codebuild = "1"

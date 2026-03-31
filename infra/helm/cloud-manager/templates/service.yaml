@@ -1,0 +1,54 @@
+{{- if .Values.web.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "cloud-manager.fullname" . }}-web
+  labels:
+    {{- include "cloud-manager.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    app: web
+    {{- include "cloud-manager.serviceSelectorLabels" . | nindent 4 }}
+  ports:
+    - port: {{ .Values.web.port }}
+      targetPort: {{ .Values.web.port }}
+      protocol: TCP
+{{- end }}
+---
+{{- if .Values.gateway.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "cloud-manager.fullname" . }}-gateway
+  labels:
+    {{- include "cloud-manager.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    app: gateway
+    {{- include "cloud-manager.serviceSelectorLabels" . | nindent 4 }}
+  ports:
+    - port: {{ .Values.gateway.port }}
+      targetPort: {{ .Values.gateway.port }}
+      protocol: TCP
+{{- end }}
+---
+{{- range .Values.services }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "cloud-manager.fullname" $ }}-{{ .name }}
+  labels:
+    {{- include "cloud-manager.labels" $ | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    app: {{ .name }}
+    {{- include "cloud-manager.serviceSelectorLabels" $ | nindent 4 }}
+  ports:
+    - port: {{ .port }}
+      targetPort: {{ .port }}
+      protocol: TCP
+---
+{{- end }}

@@ -1,0 +1,147 @@
+# Cloud Manager — Docker Compose
+# Zero external database dependencies. SurrealDB runs embedded inside each Rust service.
+# Data is persisted to local volumes via RocksDB backend.
+
+services:
+  web:
+    build:
+      context: .
+      dockerfile: infra/docker/Dockerfile.web
+    ports:
+      - "3000:3000"
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:3000/api
+      NEXT_PUBLIC_GATEWAY_URL: http://gateway:8080
+      NEXTAUTH_URL: http://localhost:3000
+      NEXTAUTH_SECRET: cloud-manager-secret
+    depends_on:
+      - gateway
+
+  gateway:
+    build:
+      context: ./services
+      dockerfile: ../infra/docker/Dockerfile.gateway
+    ports:
+      - "8080:8080"
+    environment:
+      RUST_LOG: info
+      JWT_SECRET: cloud-manager-jwt-secret
+      SURREAL_DB_PATH: /data/gateway
+    volumes:
+      - gateway_data:/data
+
+  auth-service:
+    build:
+      context: ./services
+      dockerfile: ../infra/docker/Dockerfile.rust-service
+      args:
+        SERVICE_NAME: auth-service
+    ports:
+      - "8081:8081"
+    environment:
+      RUST_LOG: info
+      JWT_SECRET: cloud-manager-jwt-secret
+      SURREAL_DB_PATH: /data/auth
+    volumes:
+      - auth_data:/data
+
+  cloud-service:
+    build:
+      context: ./services
+      dockerfile: ../infra/docker/Dockerfile.rust-service
+      args:
+        SERVICE_NAME: cloud-service
+    ports:
+      - "8082:8082"
+    environment:
+      RUST_LOG: info
+      CLOUD_USE_MOCK_DATA: "true"
+      SURREAL_DB_PATH: /data/cloud
+    volumes:
+      - cloud_data:/data
+
+  security-service:
+    build:
+      context: ./services
+      dockerfile: ../infra/docker/Dockerfile.rust-service
+      args:
+        SERVICE_NAME: security-service
+    ports:
+      - "8083:8083"
+    environment:
+      RUST_LOG: info
+      SURREAL_DB_PATH: /data/security
+    volumes:
+      - security_data:/data
+
+  monitoring-service:
+    build:
+      context: ./services
+      dockerfile: ../infra/docker/Dockerfile.rust-service
+      args:
+        SERVICE_NAME: monitoring-service
+    ports:
+      - "8084:8084"
+    environment:
+      RUST_LOG: info
+
+  cost-service:
+    build:
+      context: ./services
+      dockerfile: ../infra/docker/Dockerfile.rust-service
+      args:
+        SERVICE_NAME: cost-service
+    ports:
+      - "8085:8085"
+    environment:
+      RUST_LOG: info
+
+  claude-ai-service:
+    build:
+      context: ./services
+      dockerfile: ../infra/docker/Dockerfile.rust-service
+      args:
+        SERVICE_NAME: claude-ai-service
+    ports:
+      - "8086:8086"
+    environment:
+      RUST_LOG: info
+
+  data-engineering-service:
+    build:
+      context: ./services
+      dockerfile: ../infra/docker/Dockerfile.rust-service
+      args:
+        SERVICE_NAME: data-engineering-service
+    ports:
+      - "8087:8087"
+    environment:
+      RUST_LOG: info
+
+  analytics-service:
+    build:
+      context: ./services
+      dockerfile: ../infra/docker/Dockerfile.rust-service
+      args:
+        SERVICE_NAME: analytics-service
+    ports:
+      - "8088:8088"
+    environment:
+      RUST_LOG: info
+
+  tutorial-service:
+    build:
+      context: ./services
+      dockerfile: ../infra/docker/Dockerfile.rust-service
+      args:
+        SERVICE_NAME: tutorial-service
+    ports:
+      - "8089:8089"
+    environment:
+      RUST_LOG: info
+
+volumes:
+  gateway_data:
+  auth_data:
+  cloud_data:
+  security_data:

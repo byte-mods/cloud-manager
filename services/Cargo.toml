@@ -1,0 +1,26 @@
+[workspace]
+members = ["gateway", "auth-service", "cloud-common", "cloud-service", "security-service", "claude-ai-service", "tutorial-service", "cost-service", "monitoring-service", "analytics-service", "data-engineering-service"]
+resolver = "2"
+
+[workspace.dependencies]
+actix = "0.13"
+actix-web = "4"
+actix-rt = "1"
+actix-cors = "0.7"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+surrealdb = { version = "2", features = ["kv-rocksdb"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+jsonwebtoken = "9"
+bcrypt = "0.16"
+reqwest = { version = "0.12", features = ["json", "stream"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+thiserror = "2"
+anyhow = "1"
+dotenv = "0.15"
+config = "0.14"
+async-trait = "0.1"
+futures = "0.3"

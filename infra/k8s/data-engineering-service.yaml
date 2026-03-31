@@ -1,0 +1,61 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: data-engineering-service
+  namespace: cloud-manager
+  labels:
+    app: data-engineering-service
+    component: backend
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: data-engineering-service
+  template:
+    metadata:
+      labels:
+        app: data-engineering-service
+        component: backend
+    spec:
+      containers:
+        - name: data-engineering-service
+          image: cloud-manager/data-engineering-service:latest
+          ports:
+            - containerPort: 8087
+          envFrom:
+            - configMapRef:
+                name: cloud-manager-config
+            - secretRef:
+                name: cloud-manager-secrets
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8087
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8087
+            initialDelaySeconds: 15
+            periodSeconds: 20
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: data-engineering-service
+  namespace: cloud-manager
+spec:
+  selector:
+    app: data-engineering-service
+  ports:
+    - port: 8087
+      targetPort: 8087
+  type: ClusterIP

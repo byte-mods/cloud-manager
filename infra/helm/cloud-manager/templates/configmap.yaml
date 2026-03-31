@@ -1,0 +1,20 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "cloud-manager.fullname" . }}-config
+  labels:
+    {{- include "cloud-manager.labels" . | nindent 4 }}
+data:
+  {{- range $key, $value := .Values.config }}
+  {{ $key }}: {{ $value | quote }}
+  {{- end }}
+  GATEWAY_URL: "http://{{ include "cloud-manager.fullname" . }}-gateway:{{ .Values.gateway.port }}"
+  AUTH_SERVICE_URL: "http://{{ include "cloud-manager.fullname" . }}-auth-service:8081"
+  CLOUD_SERVICE_URL: "http://{{ include "cloud-manager.fullname" . }}-cloud-service:8082"
+  SECURITY_SERVICE_URL: "http://{{ include "cloud-manager.fullname" . }}-security-service:8083"
+  MONITORING_SERVICE_URL: "http://{{ include "cloud-manager.fullname" . }}-monitoring-service:8084"
+  COST_SERVICE_URL: "http://{{ include "cloud-manager.fullname" . }}-cost-service:8085"
+  CLAUDE_AI_SERVICE_URL: "http://{{ include "cloud-manager.fullname" . }}-claude-ai-service:8086"
+  DATA_ENGINEERING_SERVICE_URL: "http://{{ include "cloud-manager.fullname" . }}-data-engineering-service:8087"
+  ANALYTICS_SERVICE_URL: "http://{{ include "cloud-manager.fullname" . }}-analytics-service:8088"
+  TUTORIAL_SERVICE_URL: "http://{{ include "cloud-manager.fullname" . }}-tutorial-service:8089"
