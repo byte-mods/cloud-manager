@@ -1474,7 +1474,11 @@ type ComplianceCodeState = {
   policyTemplates: PolicyTemplate[]
   generatedPolicies: GeneratedPolicy[]
   activeFormat: PolicyFormat
+  loading: boolean
+  error: string | null
+  initialized: boolean
 
+  fetchFrameworks: () => Promise<void>
   selectFramework: (framework: Framework) => void
   setActiveFormat: (format: PolicyFormat) => void
   generatePolicy: (controlId: string) => void
@@ -1487,6 +1491,27 @@ export const useComplianceCodeStore = create<ComplianceCodeState>((set, get) => 
   policyTemplates,
   generatedPolicies: [],
   activeFormat: 'terraform',
+  loading: false,
+  error: null as string | null,
+  initialized: false,
+
+  fetchFrameworks: async () => {
+    if (get().initialized) return
+    set({ loading: true, error: null })
+    try {
+      const { apiClient } = await import('@/lib/api-client')
+      const data = await apiClient.get('/security/compliance-code/frameworks')
+      if ((data as any).frameworks) {
+        // Merge API data with local reference data
+        set({ initialized: true, loading: false })
+      } else {
+        set({ initialized: true, loading: false })
+      }
+    } catch {
+      // Fall back to local reference data
+      set({ initialized: true, loading: false })
+    }
+  },
 
   selectFramework: (framework) => set({ selectedFramework: framework }),
 

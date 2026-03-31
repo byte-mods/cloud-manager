@@ -8,13 +8,20 @@ use crate::models::*;
 use crate::providers::azure_mapper;
 use crate::providers::azure_rest_client::AzureRestClient;
 use crate::traits::compute::Result;
-use crate::traits::{ComputeProvider, ContainerRegistryProvider, DatabaseProvider, KubernetesProvider, NetworkingProvider, ServerlessProvider, StorageProvider, TrafficProvider, WorkflowProvider};
+use crate::traits::{
+    ApiGatewayProvider, AutoScalingProvider, CacheDbProvider, CdnProvider, ComputeProvider,
+    ContainerRegistryProvider, DatabaseProvider, DnsProvider, IamProvider, IoTProvider,
+    KmsProvider, KubernetesProvider, MessagingProvider, MlProvider, NetworkingProvider,
+    NoSqlProvider, ServerlessProvider, StorageProvider, TrafficProvider, VolumeProvider,
+    WafProvider, WorkflowProvider,
+};
 
 // Azure API versions
 const VM_API_VERSION: &str = "2024-07-01";
 const STORAGE_API_VERSION: &str = "2023-05-01";
 const NETWORK_API_VERSION: &str = "2024-01-01";
 const SQL_API_VERSION: &str = "2023-08-01-preview";
+const MISC_API_VERSION: &str = "2023-11-01";
 
 /// Default resource group when none can be inferred.
 const DEFAULT_RESOURCE_GROUP: &str = "default-rg";
@@ -907,4 +914,1739 @@ impl WorkflowProvider for AzureSdkProvider {
     async fn get_state_machine(&self, _region: &str, arn: &str) -> Result<CloudResource> { Err(CloudError::NotFound(format!("Azure Logic App {} not found", arn))) }
     async fn start_execution(&self, _region: &str, _arn: &str, _input: serde_json::Value) -> Result<CloudResource> { Err(CloudError::ProviderError("Azure Logic Apps not yet implemented via SDK".into())) }
     async fn list_executions(&self, _region: &str, _arn: &str) -> Result<Vec<CloudResource>> { Ok(vec![]) }
+}
+
+// ---------------------------------------------------------------------------
+// ApiGatewayProvider – Azure API Management
+// ---------------------------------------------------------------------------
+
+#[async_trait]
+impl ApiGatewayProvider for AzureSdkProvider {
+    async fn list_apis(&self, region: &str) -> Result<Vec<CloudResource>> {
+        let path = "/providers/Microsoft.ApiManagement/service";
+        let data = self.client.get(path, MISC_API_VERSION).await?;
+        Ok(data["value"]
+            .as_array()
+            .unwrap_or(&vec![])
+            .iter()
+            .filter(|v| {
+                v["location"]
+                    .as_str()
+                    .map(|l| l.eq_ignore_ascii_case(region))
+                    .unwrap_or(false)
+            })
+            .map(|v| CloudResource {
+                id: uuid::Uuid::new_v4(),
+                cloud_id: v["id"].as_str().map(|s| s.to_owned()),
+                provider: CloudProvider::Azure,
+                resource_type: ResourceType::ApiGateway,
+                name: v["name"].as_str().unwrap_or_default().to_owned(),
+                region: region.to_owned(),
+                status: ResourceStatus::Available,
+                metadata: v.clone(),
+                tags: std::collections::HashMap::new(),
+                created_at: chrono::Utc::now(),
+                updated_at: chrono::Utc::now(),
+            })
+            .collect())
+    }
+
+    async fn get_api(&self, region: &str, id: &str) -> Result<CloudResource> {
+        let path = if id.starts_with('/') {
+            id.to_owned()
+        } else {
+            format!(
+                "/resourceGroups/{}/providers/Microsoft.ApiManagement/service/{}",
+                DEFAULT_RESOURCE_GROUP, id
+            )
+        };
+        let data = self.client.get(&path, MISC_API_VERSION).await?;
+        Ok(CloudResource {
+            id: uuid::Uuid::new_v4(),
+            cloud_id: data["id"].as_str().map(|s| s.to_owned()),
+            provider: CloudProvider::Azure,
+            resource_type: ResourceType::ApiGateway,
+            name: data["name"].as_str().unwrap_or(id).to_owned(),
+            region: region.to_owned(),
+            status: ResourceStatus::Available,
+            metadata: data,
+            tags: std::collections::HashMap::new(),
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        })
+    }
+
+    async fn create_api(&self, region: &str, name: &str, protocol: &str) -> Result<CloudResource> {
+        let path = format!(
+            "/resourceGroups/{}/providers/Microsoft.ApiManagement/service/{}",
+            DEFAULT_RESOURCE_GROUP, name
+        );
+        let body = serde_json::json!({
+            "location": region,
+            "sku": { "name": "Consumption", "capacity": 0 },
+            "properties": {
+                "publisherEmail": "admin@example.com",
+                "publisherName": "CloudManager",
+                "gatewayUrl": format!("https://{}.azure-api.net", name),
+                "protocols": [protocol],
+            }
+        });
+        let data = self.client.put(&path, MISC_API_VERSION, &body).await?;
+        Ok(CloudResource {
+            id: uuid::Uuid::new_v4(),
+            cloud_id: data["id"].as_str().map(|s| s.to_owned()),
+            provider: CloudProvider::Azure,
+            resource_type: ResourceType::ApiGateway,
+            name: name.to_owned(),
+            region: region.to_owned(),
+            status: ResourceStatus::Creating,
+            metadata: data,
+            tags: std::collections::HashMap::new(),
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        })
+    }
+
+    async fn delete_api(&self, _region: &str, id: &str) -> Result<()> {
+        let path = if id.starts_with('/') {
+            id.to_owned()
+        } else {
+            format!(
+                "/resourceGroups/{}/providers/Microsoft.ApiManagement/service/{}",
+                DEFAULT_RESOURCE_GROUP, id
+            )
+        };
+        self.client.delete(&path, MISC_API_VERSION).await
+    }
+
+    async fn list_routes(&self, _region: &str, api_id: &str) -> Result<Vec<CloudResource>> {
+        let path = if api_id.starts_with('/') {
+            format!("{}/apis", api_id)
+        } else {
+            format!(
+                "/resourceGroups/{}/providers/Microsoft.ApiManagement/service/{}/apis",
+                DEFAULT_RESOURCE_GROUP, api_id
+            )
+        };
+        let data = self.client.get(&path, MISC_API_VERSION).await?;
+        Ok(data["value"]
+            .as_array()
+            .unwrap_or(&vec![])
+            .iter()
+            .map(|r| CloudResource {
+                id: uuid::Uuid::new_v4(),
+                cloud_id: r["id"].as_str().map(|s| s.to_owned()),
+                provider: CloudProvider::Azure,
+                resource_type: ResourceType::ApiRoute,
+                name: r["name"].as_str().unwrap_or_default().to_owned(),
+                region: String::new(),
+                status: ResourceStatus::Available,
+                metadata: r.clone(),
+                tags: std::collections::HashMap::new(),
+                created_at: chrono::Utc::now(),
+                updated_at: chrono::Utc::now(),
+            })
+            .collect())
+    }
+
+    async fn create_route(&self, _region: &str, api_id: &str, method: &str, path: &str) -> Result<CloudResource> {
+        let route_name = format!("{}-{}", method.to_lowercase(), path.replace('/', "-").trim_matches('-'));
+        let api_path = if api_id.starts_with('/') {
+            format!("{}/apis/{}", api_id, route_name)
+        } else {
+            format!(
+                "/resourceGroups/{}/providers/Microsoft.ApiManagement/service/{}/apis/{}",
+                DEFAULT_RESOURCE_GROUP, api_id, route_name
+            )
+        };
+        let body = serde_json::json!({
+            "properties": {
+                "displayName": format!("{} {}", method, path),
+                "path": path,
+                "protocols": ["https"],
+            }
+        });
+        let data = self.client.put(&api_path, MISC_API_VERSION, &body).await?;
+        Ok(CloudResource {
+            id: uuid::Uuid::new_v4(),
+            cloud_id: data["id"].as_str().map(|s| s.to_owned()),
+            provider: CloudProvider::Azure,
+            resource_type: ResourceType::ApiRoute,
+            name: route_name,
+            region: String::new(),
+            status: ResourceStatus::Creating,
+            metadata: data,
+            tags: std::collections::HashMap::new(),
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        })
+    }
+
+    async fn list_stages(&self, _region: &str, _api_id: &str) -> Result<Vec<CloudResource>> {
+        // Azure API Management does not have a stages concept like AWS — return empty.
+        Ok(vec![])
+    }
+
+    async fn create_stage(&self, _region: &str, _api_id: &str, _name: &str) -> Result<CloudResource> {
+        Err(CloudError::ProviderError(
+            "Azure API Management does not support stages".into(),
+        ))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// CdnProvider – Azure CDN profiles / endpoints
+// ---------------------------------------------------------------------------
+
+#[async_trait]
+impl CdnProvider for AzureSdkProvider {
+    async fn list_distributions(&self, region: &str) -> Result<Vec<CloudResource>> {
+        let path = "/providers/Microsoft.Cdn/profiles";
+        let data = self.client.get(path, MISC_API_VERSION).await?;
+        Ok(data["value"]
+            .as_array()
+            .unwrap_or(&vec![])
+            .iter()
+            .filter(|v| {
+                v["location"]
+                    .as_str()
+                    .map(|l| l.eq_ignore_ascii_case(region))
+                    .unwrap_or(false)
+            })
+            .map(|v| CloudResource {
+                id: uuid::Uuid::new_v4(),
+                cloud_id: v["id"].as_str().map(|s| s.to_owned()),
+                provider: CloudProvider::Azure,
+                resource_type: ResourceType::CdnDistribution,
+                name: v["name"].as_str().unwrap_or_default().to_owned(),
+                region: region.to_owned(),
+                status: ResourceStatus::Available,
+                metadata: v.clone(),
+                tags: std::collections::HashMap::new(),
+                created_at: chrono::Utc::now(),
+                updated_at: chrono::Utc::now(),
+            })
+            .collect())
+    }
+
+    async fn get_distribution(&self, region: &str, id: &str) -> Result<CloudResource> {
+        let path = if id.starts_with('/') {
+            id.to_owned()
+        } else {
+            format!(
+                "/resourceGroups/{}/providers/Microsoft.Cdn/profiles/{}",
+                DEFAULT_RESOURCE_GROUP, id
+            )
+        };
+        let data = self.client.get(&path, MISC_API_VERSION).await?;
+        Ok(CloudResource {
+            id: uuid::Uuid::new_v4(),
+            cloud_id: data["id"].as_str().map(|s| s.to_owned()),
+            provider: CloudProvider::Azure,
+            resource_type: ResourceType::CdnDistribution,
+            name: data["name"].as_str().unwrap_or(id).to_owned(),
+            region: region.to_owned(),
+            status: ResourceStatus::Available,
+            metadata: data,
+            tags: std::collections::HashMap::new(),
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        })
+    }
+
+    async fn create_distribution(&self, region: &str, config: CreateDistributionRequest) -> Result<CloudResource> {
+        let profile_name = config.origin_domain.replace('.', "-");
+        let path = format!(
+            "/resourceGroups/{}/providers/Microsoft.Cdn/profiles/{}",
+            DEFAULT_RESOURCE_GROUP, profile_name
+        );
+        let body = serde_json::json!({
+            "location": region,
+            "sku": { "name": "Standard_Microsoft" },
+            "properties": {
+                "originResponseTimeoutSeconds": 60,
+            }
+        });
+        let data = self.client.put(&path, MISC_API_VERSION, &body).await?;
+        Ok(CloudResource {
+            id: uuid::Uuid::new_v4(),
+            cloud_id: data["id"].as_str().map(|s| s.to_owned()),
+            provider: CloudProvider::Azure,
+            resource_type: ResourceType::CdnDistribution,
+            name: profile_name,
+            region: region.to_owned(),
+            status: ResourceStatus::Creating,
+            metadata: data,
+            tags: std::collections::HashMap::new(),
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        })
+    }
+
+    async fn delete_distribution(&self, _region: &str, id: &str) -> Result<()> {
+        let path = if id.starts_with('/') {
+            id.to_owned()
+        } else {
+            format!(
+                "/resourceGroups/{}/providers/Microsoft.Cdn/profiles/{}",
+                DEFAULT_RESOURCE_GROUP, id
+            )
+        };
+        self.client.delete(&path, MISC_API_VERSION).await
+    }
+
+    async fn invalidate_cache(&self, _region: &str, distribution_id: &str, paths: Vec<String>) -> Result<()> {
+        let purge_path = if distribution_id.starts_with('/') {
+            format!("{}/purge", distribution_id)
+        } else {
+            format!(
+                "/resourceGroups/{}/providers/Microsoft.Cdn/profiles/{}/purge",
+                DEFAULT_RESOURCE_GROUP, distribution_id
+            )
+        };
+        let body = serde_json::json!({ "contentPaths": paths });
+        self.client
+            .post(&purge_path, MISC_API_VERSION, &body)
+            .await?;
+        Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// NoSqlProvider – Azure Cosmos DB
+// ---------------------------------------------------------------------------
+
+#[async_trait]
+impl NoSqlProvider for AzureSdkProvider {
+    async fn list_tables(&self, region: &str) -> Result<Vec<CloudResource>> {
+        let path = "/providers/Microsoft.DocumentDB/databaseAccounts";
+        let data = self.client.get(path, MISC_API_VERSION).await?;
+        Ok(data["value"]
+            .as_array()
+            .unwrap_or(&vec![])
+            .iter()
+            .filter(|v| {
+                v["location"]
+                    .as_str()
+                    .map(|l| l.eq_ignore_ascii_case(region))
+                    .unwrap_or(false)
+            })
+            .map(|v| CloudResource {
+                id: uuid::Uuid::new_v4(),
+                cloud_id: v["id"].as_str().map(|s| s.to_owned()),
+                provider: CloudProvider::Azure,
+                resource_type: ResourceType::NoSqlTable,
+                name: v["name"].as_str().unwrap_or_default().to_owned(),
+                region: region.to_owned(),
+                status: ResourceStatus::Available,
+                metadata: v.clone(),
+                tags: std::collections::HashMap::new(),
+                created_at: chrono::Utc::now(),
+                updated_at: chrono::Utc::now(),
+            })
+            .collect())
+    }
+
+    async fn get_table(&self, region: &str, name: &str) -> Result<CloudResource> {
+        let path = if name.starts_with('/') {
+            name.to_owned()
+        } else {
+            format!(
+                "/resourceGroups/{}/providers/Microsoft.DocumentDB/databaseAccounts/{}",
+                DEFAULT_RESOURCE_GROUP, name
+            )
+        };
+        let data = self.client.get(&path, MISC_API_VERSION).await?;
+        Ok(CloudResource {
+            id: uuid::Uuid::new_v4(),
+            cloud_id: data["id"].as_str().map(|s| s.to_owned()),
+            provider: CloudProvider::Azure,
+            resource_type: ResourceType::NoSqlTable,
+            name: data["name"].as_str().unwrap_or(name).to_owned(),
+            region: region.to_owned(),
+            status: ResourceStatus::Available,
+            metadata: data,
+            tags: std::collections::HashMap::new(),
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        })
+    }
+
+    async fn create_table(
+        &self,
+        region: &str,
+        name: &str,
+        key_schema: serde_json::Value,
+    ) -> Result<CloudResource> {
+        let path = format!(
+            "/resourceGroups/{}/providers/Microsoft.DocumentDB/databaseAccounts/{}",
+            DEFAULT_RESOURCE_GROUP, name
+        );
+        let body = serde_json::json!({
+            "location": region,
+            "kind": "GlobalDocumentDB",
+            "properties": {
+                "databaseAccountOfferType": "Standard",
+                "locations": [{ "locationName": region, "failoverPriority": 0 }],
+                "consistencyPolicy": { "defaultConsistencyLevel": "Session" },
+                "keySchema": key_schema,
+            }
+        });
+        let data = self.client.put(&path, MISC_API_VERSION, &body).await?;
+        Ok(CloudResource {
+            id: uuid::Uuid::new_v4(),
+            cloud_id: data["id"].as_str().map(|s| s.to_owned()),
+            provider: CloudProvider::Azure,
+            resource_type: ResourceType::NoSqlTable,
+            name: name.to_owned(),
+            region: region.to_owned(),
+            status: ResourceStatus::Creating,
+            metadata: data,
+            tags: std::collections::HashMap::new(),
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        })
+    }
+
+    async fn delete_table(&self, _region: &str, name: &str) -> Result<()> {
+        let path = if name.starts_with('/') {
+            name.to_owned()
+        } else {
+            format!(
+                "/resourceGroups/{}/providers/Microsoft.DocumentDB/databaseAccounts/{}",
+                DEFAULT_RESOURCE_GROUP, name
+            )
+        };
+        self.client.delete(&path, MISC_API_VERSION).await
+    }
+
+    async fn describe_table(&self, _region: &str, name: &str) -> Result<serde_json::Value> {
+        let path = if name.starts_with('/') {
+            name.to_owned()
+        } else {
+            format!(
+                "/resourceGroups/{}/providers/Microsoft.DocumentDB/databaseAccounts/{}",
+                DEFAULT_RESOURCE_GROUP, name
+            )
+        };
+        let data = self.client.get(&path, MISC_API_VERSION).await?;
+        Ok(data)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// CacheDbProvider – Azure Cache for Redis
+// ---------------------------------------------------------------------------
+
+#[async_trait]
+impl CacheDbProvider for AzureSdkProvider {
+    async fn list_clusters(&self, region: &str) -> Result<Vec<CloudResource>> {
+        let path = "/providers/Microsoft.Cache/redis";
+        let data = self.client.get(path, MISC_API_VERSION).await?;
+        Ok(data["value"]
+            .as_array()
+            .unwrap_or(&vec![])
+            .iter()
+            .filter(|v| {
+                v["location"]
+                    .as_str()
+                    .map(|l| l.eq_ignore_ascii_case(region))
+                    .unwrap_or(false)
+            })
+            .map(|v| CloudResource {
+                id: uuid::Uuid::new_v4(),
+                cloud_id: v["id"].as_str().map(|s| s.to_owned()),
+                provider: CloudProvider::Azure,
+                resource_type: ResourceType::CacheCluster,
+                name: v["name"].as_str().unwrap_or_default().to_owned(),
+                region: region.to_owned(),
+                status: ResourceStatus::Available,
+                metadata: v.clone(),
+                tags: std::collections::HashMap::new(),
+                created_at: chrono::Utc::now(),
+                updated_at: chrono::Utc::now(),
+            })
+            .collect())
+    }
+
+    async fn get_cluster(&self, region: &str, id: &str) -> Result<CloudResource> {
+        let path = if id.starts_with('/') {
+            id.to_owned()
+        } else {
+            format!(
+                "/resourceGroups/{}/providers/Microsoft.Cache/redis/{}",
+                DEFAULT_RESOURCE_GROUP, id
+            )
+        };
+        let data = self.client.get(&path, MISC_API_VERSION).await?;
+        Ok(CloudResource {
+            id: uuid::Uuid::new_v4(),
+            cloud_id: data["id"].as_str().map(|s| s.to_owned()),
+            provider: CloudProvider::Azure,
+            resource_type: ResourceType::CacheCluster,
+            name: data["name"].as_str().unwrap_or(id).to_owned(),
+            region: region.to_owned(),
+            status: ResourceStatus::Available,
+            metadata: data,
+            tags: std::collections::HashMap::new(),
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        })
+    }
+
+    async fn create_cluster(
+        &self,
+        region: &str,
+        name: &str,
+        _engine: &str,
+        node_type: &str,
+    ) -> Result<CloudResource> {
+        let path = format!(
+            "/resourceGroups/{}/providers/Microsoft.Cache/redis/{}",
+            DEFAULT_RESOURCE_GROUP, name
+        );
+        let body = serde_json::json!({
+            "location": region,
+            "properties": {
+                "sku": {
+                    "name": "Standard",
+                    "family": "C",
+                    "capacity": node_type.parse::<i32>().unwrap_or(1),
+                },
+                "enableNonSslPort": false,
+                "minimumTlsVersion": "1.2",
+            }
+        });
+        let data = self.client.put(&path, MISC_API_VERSION, &body).await?;
+        Ok(CloudResource {
+            id: uuid::Uuid::new_v4(),
+            cloud_id: data["id"].as_str().map(|s| s.to_owned()),
+            provider: CloudProvider::Azure,
+            resource_type: ResourceType::CacheCluster,
+            name: name.to_owned(),
+            region: region.to_owned(),
+            status: ResourceStatus::Creating,
+            metadata: data,
+            tags: std::collections::HashMap::new(),
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        })
+    }
+
+    async fn delete_cluster(&self, _region: &str, id: &str) -> Result<()> {
+        let path = if id.starts_with('/') {
+            id.to_owned()
+        } else {
+            format!(
+                "/resourceGroups/{}/providers/Microsoft.Cache/redis/{}",
+                DEFAULT_RESOURCE_GROUP, id
+            )
+        };
+        self.client.delete(&path, MISC_API_VERSION).await
+    }
+}
+
+// ---------------------------------------------------------------------------
+// MlProvider – Azure Machine Learning workspaces
+// ---------------------------------------------------------------------------
+
+#[async_trait]
+impl MlProvider for AzureSdkProvider {
+    async fn list_models(&self, region: &str) -> Result<Vec<CloudResource>> {
+        let path = "/providers/Microsoft.MachineLearningServices/workspaces";
+        let data = self.client.get(path, MISC_API_VERSION).await?;
+        Ok(data["value"]
+            .as_array()
+            .unwrap_or(&vec![])
+            .iter()
+            .filter(|v| {
+                v["location"]
+                    .as_str()
+                    .map(|l| l.eq_ignore_ascii_case(region))
+                    .unwrap_or(false)
+            })
+            .map(|v| CloudResource {
+                id: uuid::Uuid::new_v4(),
+                cloud_id: v["id"].as_str().map(|s| s.to_owned()),
+                provider: CloudProvider::Azure,
+                resource_type: ResourceType::MlModel,
+                name: v["name"].as_str().unwrap_or_default().to_owned(),
+                region: region.to_owned(),
+                status: ResourceStatus::Available,
+                metadata: v.clone(),
+                tags: std::collections::HashMap::new(),
+                created_at: chrono::Utc::now(),
+                updated_at: chrono::Utc::now(),
+            })
+            .collect())
+    }
+
+    async fn list_endpoints(&self, region: &str) -> Result<Vec<CloudResource>> {
+        // Azure ML online endpoints live under a workspace. Without a workspace name
+        // we list workspaces as a proxy. A full implementation would enumerate
+        // endpoints under each workspace.
+        let _ = region;
+        Ok(vec![])
+    }
+
+    async fn list_training_jobs(&self, _region: &str) -> Result<Vec<CloudResource>> {
+        Ok(vec![])
+    }
+
+    async fn create_endpoint(
+        &self,
+        region: &str,
+        name: &str,
+        model_name: &str,
+    ) -> Result<CloudResource> {
+        // Creating an Azure ML online endpoint requires a workspace context.
+        // Use a conventional workspace name derived from the endpoint name.
+        let workspace = format!("{}-ws", name);
+        let path = format!(
+            "/resourceGroups/{}/providers/Microsoft.MachineLearningServices/workspaces/{}/onlineEndpoints/{}",
+            DEFAULT_RESOURCE_GROUP, workspace, name
+        );
+        let body = serde_json::json!({
+            "location": region,
+            "properties": {
+                "authMode": "Key",
+                "description": format!("Endpoint for model {}", model_name),
+            }
+        });
+        let data = self.client.put(&path, MISC_API_VERSION, &body).await?;
+        Ok(CloudResource {
+            id: uuid::Uuid::new_v4(),
+            cloud_id: data["id"].as_str().map(|s| s.to_owned()),
+            provider: CloudProvider::Azure,
+            resource_type: ResourceType::MlEndpoint,
+            name: name.to_owned(),
+            region: region.to_owned(),
+            status: ResourceStatus::Creating,
+            metadata: data,
+            tags: std::collections::HashMap::new(),
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        })
+    }
+
+    async fn delete_endpoint(&self, _region: &str, name: &str) -> Result<()> {
+        let workspace = format!("{}-ws", name);
+        let path = format!(
+            "/resourceGroups/{}/providers/Microsoft.MachineLearningServices/workspaces/{}/onlineEndpoints/{}",
+            DEFAULT_RESOURCE_GROUP, workspace, name
+        );
+        self.client.delete(&path, MISC_API_VERSION).await
+    }
+}
+
+// ---------------------------------------------------------------------------
+// IoTProvider – Azure IoT Hub
+// ---------------------------------------------------------------------------
+
+#[async_trait]
+impl IoTProvider for AzureSdkProvider {
+    async fn list_things(&self, region: &str) -> Result<Vec<CloudResource>> {
+        let path = "/providers/Microsoft.Devices/IotHubs";
+        let data = self.client.get(path, MISC_API_VERSION).await?;
+        Ok(data["value"]
+            .as_array()
+            .unwrap_or(&vec![])
+            .iter()
+            .filter(|v| {
+                v["location"]
+                    .as_str()
+                    .map(|l| l.eq_ignore_ascii_case(region))
+                    .unwrap_or(false)
+            })
+            .map(|v| CloudResource {
+                id: uuid::Uuid::new_v4(),
+                cloud_id: v["id"].as_str().map(|s| s.to_owned()),
+                provider: CloudProvider::Azure,
+                resource_type: ResourceType::IoTThing,
+                name: v["name"].as_str().unwrap_or_default().to_owned(),
+                region: region.to_owned(),
+                status: ResourceStatus::Available,
+                metadata: v.clone(),
+                tags: std::collections::HashMap::new(),
+                created_at: chrono::Utc::now(),
+                updated_at: chrono::Utc::now(),
+            })
+            .collect())
+    }
+
+    async fn get_thing(&self, region: &str, name: &str) -> Result<CloudResource> {
+        let path = if name.starts_with('/') {
+            name.to_owned()
+        } else {
+            format!(
+                "/resourceGroups/{}/providers/Microsoft.Devices/IotHubs/{}",
+                DEFAULT_RESOURCE_GROUP, name
+            )
+        };
+        let data = self.client.get(&path, MISC_API_VERSION).await?;
+        Ok(CloudResource {
+            id: uuid::Uuid::new_v4(),
+            cloud_id: data["id"].as_str().map(|s| s.to_owned()),
+            provider: CloudProvider::Azure,
+            resource_type: ResourceType::IoTThing,
+            name: data["name"].as_str().unwrap_or(name).to_owned(),
+            region: region.to_owned(),
+            status: ResourceStatus::Available,
+            metadata: data,
+            tags: std::collections::HashMap::new(),
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        })
+    }
+
+    async fn create_thing(
+        &self,
+        region: &str,
+        name: &str,
+        attributes: serde_json::Value,
+    ) -> Result<CloudResource> {
+        let path = format!(
+            "/resourceGroups/{}/providers/Microsoft.Devices/IotHubs/{}",
+            DEFAULT_RESOURCE_GROUP, name
+        );
+        let body = serde_json::json!({
+            "location": region,
+            "sku": { "name": "S1", "capacity": 1 },
+            "properties": {
+                "eventHubEndpoints": {},
+                "routing": {},
+                "features": "None",
+                "customAttributes": attributes,
+            }
+        });
+        let data = self.client.put(&path, MISC_API_VERSION, &body).await?;
+        Ok(CloudResource {
+            id: uuid::Uuid::new_v4(),
+            cloud_id: data["id"].as_str().map(|s| s.to_owned()),
+            provider: CloudProvider::Azure,
+            resource_type: ResourceType::IoTThing,
+            name: name.to_owned(),
+            region: region.to_owned(),
+            status: ResourceStatus::Creating,
+            metadata: data,
+            tags: std::collections::HashMap::new(),
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        })
+    }
+
+    async fn delete_thing(&self, _region: &str, name: &str) -> Result<()> {
+        let path = if name.starts_with('/') {
+            name.to_owned()
+        } else {
+            format!(
+                "/resourceGroups/{}/providers/Microsoft.Devices/IotHubs/{}",
+                DEFAULT_RESOURCE_GROUP, name
+            )
+        };
+        self.client.delete(&path, MISC_API_VERSION).await
+    }
+
+    async fn list_thing_groups(&self, _region: &str) -> Result<Vec<CloudResource>> {
+        // Azure IoT Hub does not have a direct "thing groups" ARM resource. Return empty.
+        Ok(vec![])
+    }
+}
+
+// ---------------------------------------------------------------------------
+// MessagingProvider – Azure Service Bus
+// ---------------------------------------------------------------------------
+
+#[async_trait]
+impl MessagingProvider for AzureSdkProvider {
+    async fn list_queues(&self, region: &str) -> Result<Vec<CloudResource>> {
+        let path = "/providers/Microsoft.ServiceBus/namespaces";
+        let data = self.client.get(path, MISC_API_VERSION).await?;
+        Ok(data["value"]
+            .as_array()
+            .unwrap_or(&vec![])
+            .iter()
+            .filter(|v| {
+                v["location"]
+                    .as_str()
+                    .map(|l| l.eq_ignore_ascii_case(region))
+                    .unwrap_or(false)
+            })
+            .map(|v| CloudResource {
+                id: uuid::Uuid::new_v4(),
+                cloud_id: v["id"].as_str().map(|s| s.to_owned()),
+                provider: CloudProvider::Azure,
+                resource_type: ResourceType::Queue,
+                name: v["name"].as_str().unwrap_or_default().to_owned(),
+                region: region.to_owned(),
+                status: ResourceStatus::Available,
+                metadata: v.clone(),
+                tags: std::collections::HashMap::new(),
+                created_at: chrono::Utc::now(),
+                updated_at: chrono::Utc::now(),
+            })
+            .collect())
+    }
+
+    async fn get_queue(&self, region: &str, id: &str) -> Result<CloudResource> {
+        let path = if id.starts_with('/') {
+            id.to_owned()
+        } else {
+            format!(
+                "/resourceGroups/{}/providers/Microsoft.ServiceBus/namespaces/{}",
+                DEFAULT_RESOURCE_GROUP, id
+            )
+        };
+        let data = self.client.get(&path, MISC_API_VERSION).await?;
+        Ok(CloudResource {
+            id: uuid::Uuid::new_v4(),
+            cloud_id: data["id"].as_str().map(|s| s.to_owned()),
+            provider: CloudProvider::Azure,
+            resource_type: ResourceType::Queue,
+            name: data["name"].as_str().unwrap_or(id).to_owned(),
+            region: region.to_owned(),
+            status: ResourceStatus::Available,
+            metadata: data,
+            tags: std::collections::HashMap::new(),
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        })
+    }
+
+    async fn create_queue(&self, region: &str, name: &str, _fifo: bool) -> Result<CloudResource> {
+        let path = format!(
+            "/resourceGroups/{}/providers/Microsoft.ServiceBus/namespaces/{}",
+            DEFAULT_RESOURCE_GROUP, name
+        );
+        let body = serde_json::json!({
+            "location": region,
+            "sku": { "name": "Standard", "tier": "Standard" },
+            "properties": {}
+        });
+        let data = self.client.put(&path, MISC_API_VERSION, &body).await?;
+        Ok(CloudResource {
+            id: uuid::Uuid::new_v4(),
+            cloud_id: data["id"].as_str().map(|s| s.to_owned()),
+            provider: CloudProvider::Azure,
+            resource_type: ResourceType::Queue,
+            name: name.to_owned(),
+            region: region.to_owned(),
+            status: ResourceStatus::Creating,
+            metadata: data,
+            tags: std::collections::HashMap::new(),
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        })
+    }
+
+    async fn delete_queue(&self, _region: &str, id: &str) -> Result<()> {
+        let path = if id.starts_with('/') {
+            id.to_owned()
+        } else {
+            format!(
+                "/resourceGroups/{}/providers/Microsoft.ServiceBus/namespaces/{}",
+                DEFAULT_RESOURCE_GROUP, id
+            )
+        };
+        self.client.delete(&path, MISC_API_VERSION).await
+    }
+
+    async fn list_topics(&self, _region: &str) -> Result<Vec<CloudResource>> {
+        // Service Bus topics live under a namespace — without a specific namespace
+        // we cannot enumerate them globally. Return empty.
+        Ok(vec![])
+    }
+
+    async fn create_topic(&self, region: &str, name: &str) -> Result<CloudResource> {
+        // Create a namespace to host the topic, then create the topic under it.
+        let ns_name = format!("{}-ns", name);
+        let path = format!(
+            "/resourceGroups/{}/providers/Microsoft.ServiceBus/namespaces/{}/topics/{}",
+            DEFAULT_RESOURCE_GROUP, ns_name, name
+        );
+        let body = serde_json::json!({
+            "properties": {
+                "maxSizeInMegabytes": 1024,
+            }
+        });
+        let data = self.client.put(&path, MISC_API_VERSION, &body).await?;
+        Ok(CloudResource {
+            id: uuid::Uuid::new_v4(),
+            cloud_id: data["id"].as_str().map(|s| s.to_owned()),
+            provider: CloudProvider::Azure,
+            resource_type: ResourceType::Topic,
+            name: name.to_owned(),
+            region: region.to_owned(),
+            status: ResourceStatus::Creating,
+            metadata: data,
+            tags: std::collections::HashMap::new(),
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        })
+    }
+
+    async fn delete_topic(&self, _region: &str, id: &str) -> Result<()> {
+        if id.starts_with('/') {
+            self.client.delete(id, MISC_API_VERSION).await
+        } else {
+            Err(CloudError::ProviderError(
+                "Azure Service Bus topic delete requires a full resource ID".into(),
+            ))
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// DnsProvider – Azure DNS zones
+// ---------------------------------------------------------------------------
+
+#[async_trait]
+impl DnsProvider for AzureSdkProvider {
+    async fn list_hosted_zones(&self, _region: &str) -> Result<Vec<CloudResource>> {
+        let path = "/providers/Microsoft.Network/dnsZones";
+        let data = self.client.get(path, NETWORK_API_VERSION).await?;
+        Ok(data["value"]
+            .as_array()
+            .unwrap_or(&vec![])
+            .iter()
+            .map(|v| CloudResource {
+                id: uuid::Uuid::new_v4(),
+                cloud_id: v["id"].as_str().map(|s| s.to_owned()),
+                provider: CloudProvider::Azure,
+                resource_type: ResourceType::DnsZone,
+                name: v["name"].as_str().unwrap_or_default().to_owned(),
+                region: "global".to_owned(),
+                status: ResourceStatus::Available,
+                metadata: v.clone(),
+                tags: std::collections::HashMap::new(),
+                created_at: chrono::Utc::now(),
+                updated_at: chrono::Utc::now(),
+            })
+            .collect())
+    }
+
+    async fn list_records(&self, _region: &str, zone_id: &str) -> Result<Vec<CloudResource>> {
+        let path = if zone_id.starts_with('/') {
+            format!("{}/recordsets", zone_id)
+        } else {
+            format!(
+                "/resourceGroups/{}/providers/Microsoft.Network/dnsZones/{}/recordsets",
+                DEFAULT_RESOURCE_GROUP, zone_id
+            )
+        };
+        let data = self.client.get(&path, NETWORK_API_VERSION).await?;
+        Ok(data["value"]
+            .as_array()
+            .unwrap_or(&vec![])
+            .iter()
+            .map(|r| CloudResource {
+                id: uuid::Uuid::new_v4(),
+                cloud_id: r["id"].as_str().map(|s| s.to_owned()),
+                provider: CloudProvider::Azure,
+                resource_type: ResourceType::DnsRecord,
+                name: r["name"].as_str().unwrap_or_default().to_owned(),
+                region: "global".to_owned(),
+                status: ResourceStatus::Available,
+                metadata: r.clone(),
+                tags: std::collections::HashMap::new(),
+                created_at: chrono::Utc::now(),
+                updated_at: chrono::Utc::now(),
+            })
+            .collect())
+    }
+
+    async fn create_record(&self, _region: &str, zone_id: &str, record: DnsRecordInput) -> Result<CloudResource> {
+        let zone_path = if zone_id.starts_with('/') {
+            zone_id.to_owned()
+        } else {
+            format!(
+                "/resourceGroups/{}/providers/Microsoft.Network/dnsZones/{}",
+                DEFAULT_RESOURCE_GROUP, zone_id
+            )
+        };
+        let path = format!("{}/{}/{}", zone_path, record.record_type, record.name);
+        let records_key = format!("{}Records", record.record_type);
+        let body = serde_json::json!({
+            "properties": {
+                "TTL": record.ttl,
+                records_key: record.values.iter().map(|v| {
+                    serde_json::json!({"ipv4Address": v})
+                }).collect::<Vec<_>>(),
+            }
+        });
+        let data = self.client.put(&path, NETWORK_API_VERSION, &body).await?;
+        Ok(CloudResource {
+            id: uuid::Uuid::new_v4(),
+            cloud_id: data["id"].as_str().map(|s| s.to_owned()),
+            provider: CloudProvider::Azure,
+            resource_type: ResourceType::DnsRecord,
+            name: record.name,
+            region: "global".to_owned(),
+            status: ResourceStatus::Available,
+            metadata: data,
+            tags: std::collections::HashMap::new(),
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        })
+    }
+
+    async fn delete_record(&self, _region: &str, zone_id: &str, record: DnsRecordInput) -> Result<()> {
+        let zone_path = if zone_id.starts_with('/') {
+            zone_id.to_owned()
+        } else {
+            format!(
+                "/resourceGroups/{}/providers/Microsoft.Network/dnsZones/{}",
+                DEFAULT_RESOURCE_GROUP, zone_id
+            )
+        };
+        let path = format!("{}/{}/{}", zone_path, record.record_type, record.name);
+        self.client.delete(&path, NETWORK_API_VERSION).await
+    }
+}
+
+// ---------------------------------------------------------------------------
+// WafProvider – Azure Application Gateway WAF policies
+// ---------------------------------------------------------------------------
+
+#[async_trait]
+impl WafProvider for AzureSdkProvider {
+    async fn list_web_acls(&self, region: &str) -> Result<Vec<CloudResource>> {
+        let path = "/providers/Microsoft.Network/ApplicationGatewayWebApplicationFirewallPolicies";
+        let data = self.client.get(path, NETWORK_API_VERSION).await?;
+        Ok(data["value"]
+            .as_array()
+            .unwrap_or(&vec![])
+            .iter()
+            .filter(|v| {
+                v["location"]
+                    .as_str()
+                    .map(|l| l.eq_ignore_ascii_case(region))
+                    .unwrap_or(false)
+            })
+            .map(|v| CloudResource {
+                id: uuid::Uuid::new_v4(),
+                cloud_id: v["id"].as_str().map(|s| s.to_owned()),
+                provider: CloudProvider::Azure,
+                resource_type: ResourceType::WafRule,
+                name: v["name"].as_str().unwrap_or_default().to_owned(),
+                region: region.to_owned(),
+                status: ResourceStatus::Available,
+                metadata: v.clone(),
+                tags: std::collections::HashMap::new(),
+                created_at: chrono::Utc::now(),
+                updated_at: chrono::Utc::now(),
+            })
+            .collect())
+    }
+
+    async fn get_web_acl(&self, region: &str, id: &str) -> Result<CloudResource> {
+        let path = if id.starts_with('/') {
+            id.to_owned()
+        } else {
+            format!(
+                "/resourceGroups/{}/providers/Microsoft.Network/ApplicationGatewayWebApplicationFirewallPolicies/{}",
+                DEFAULT_RESOURCE_GROUP, id
+            )
+        };
+        let data = self.client.get(&path, NETWORK_API_VERSION).await?;
+        Ok(CloudResource {
+            id: uuid::Uuid::new_v4(),
+            cloud_id: data["id"].as_str().map(|s| s.to_owned()),
+            provider: CloudProvider::Azure,
+            resource_type: ResourceType::WafRule,
+            name: data["name"].as_str().unwrap_or(id).to_owned(),
+            region: region.to_owned(),
+            status: ResourceStatus::Available,
+            metadata: data,
+            tags: std::collections::HashMap::new(),
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        })
+    }
+
+    async fn list_rules(&self, _region: &str, acl_id: &str) -> Result<Vec<CloudResource>> {
+        let path = if acl_id.starts_with('/') {
+            acl_id.to_owned()
+        } else {
+            format!(
+                "/resourceGroups/{}/providers/Microsoft.Network/ApplicationGatewayWebApplicationFirewallPolicies/{}",
+                DEFAULT_RESOURCE_GROUP, acl_id
+            )
+        };
+        let data = self.client.get(&path, NETWORK_API_VERSION).await?;
+        // Custom rules are embedded in the policy resource.
+        Ok(data["properties"]["customRules"]
+            .as_array()
+            .unwrap_or(&vec![])
+            .iter()
+            .map(|r| CloudResource {
+                id: uuid::Uuid::new_v4(),
+                cloud_id: None,
+                provider: CloudProvider::Azure,
+                resource_type: ResourceType::WafRule,
+                name: r["name"].as_str().unwrap_or_default().to_owned(),
+                region: String::new(),
+                status: ResourceStatus::Available,
+                metadata: r.clone(),
+                tags: std::collections::HashMap::new(),
+                created_at: chrono::Utc::now(),
+                updated_at: chrono::Utc::now(),
+            })
+            .collect())
+    }
+
+    async fn create_web_acl(&self, region: &str, name: &str) -> Result<CloudResource> {
+        let path = format!(
+            "/resourceGroups/{}/providers/Microsoft.Network/ApplicationGatewayWebApplicationFirewallPolicies/{}",
+            DEFAULT_RESOURCE_GROUP, name
+        );
+        let body = serde_json::json!({
+            "location": region,
+            "properties": {
+                "policySettings": {
+                    "state": "Enabled",
+                    "mode": "Prevention",
+                },
+                "managedRules": {
+                    "managedRuleSets": [{
+                        "ruleSetType": "OWASP",
+                        "ruleSetVersion": "3.2",
+                    }]
+                },
+                "customRules": [],
+            }
+        });
+        let data = self.client.put(&path, NETWORK_API_VERSION, &body).await?;
+        Ok(CloudResource {
+            id: uuid::Uuid::new_v4(),
+            cloud_id: data["id"].as_str().map(|s| s.to_owned()),
+            provider: CloudProvider::Azure,
+            resource_type: ResourceType::WafRule,
+            name: name.to_owned(),
+            region: region.to_owned(),
+            status: ResourceStatus::Creating,
+            metadata: data,
+            tags: std::collections::HashMap::new(),
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        })
+    }
+
+    async fn delete_web_acl(&self, _region: &str, id: &str) -> Result<()> {
+        let path = if id.starts_with('/') {
+            id.to_owned()
+        } else {
+            format!(
+                "/resourceGroups/{}/providers/Microsoft.Network/ApplicationGatewayWebApplicationFirewallPolicies/{}",
+                DEFAULT_RESOURCE_GROUP, id
+            )
+        };
+        self.client.delete(&path, NETWORK_API_VERSION).await
+    }
+}
+
+// ---------------------------------------------------------------------------
+// IamProvider – Azure RBAC role assignments
+// ---------------------------------------------------------------------------
+
+#[async_trait]
+impl IamProvider for AzureSdkProvider {
+    async fn list_users(&self, _region: &str) -> Result<Vec<CloudResource>> {
+        // Azure AD users are managed via Microsoft Graph, not ARM.
+        // Listing role assignments at the subscription scope as a proxy.
+        let path = "/providers/Microsoft.Authorization/roleAssignments";
+        let data = self.client.get(path, "2022-04-01").await?;
+        Ok(data["value"]
+            .as_array()
+            .unwrap_or(&vec![])
+            .iter()
+            .map(|v| CloudResource {
+                id: uuid::Uuid::new_v4(),
+                cloud_id: v["id"].as_str().map(|s| s.to_owned()),
+                provider: CloudProvider::Azure,
+                resource_type: ResourceType::IamUser,
+                name: v["properties"]["principalId"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_owned(),
+                region: "global".to_owned(),
+                status: ResourceStatus::Available,
+                metadata: v.clone(),
+                tags: std::collections::HashMap::new(),
+                created_at: chrono::Utc::now(),
+                updated_at: chrono::Utc::now(),
+            })
+            .collect())
+    }
+
+    async fn create_user(&self, _region: &str, _username: &str) -> Result<CloudResource> {
+        Err(CloudError::ProviderError(
+            "Azure AD user creation requires Microsoft Graph API, not ARM".into(),
+        ))
+    }
+
+    async fn delete_user(&self, _region: &str, _username: &str) -> Result<()> {
+        Err(CloudError::ProviderError(
+            "Azure AD user deletion requires Microsoft Graph API, not ARM".into(),
+        ))
+    }
+
+    async fn list_roles(&self, _region: &str) -> Result<Vec<CloudResource>> {
+        let path = "/providers/Microsoft.Authorization/roleDefinitions";
+        let data = self.client.get(path, "2022-04-01").await?;
+        Ok(data["value"]
+            .as_array()
+            .unwrap_or(&vec![])
+            .iter()
+            .map(|v| CloudResource {
+                id: uuid::Uuid::new_v4(),
+                cloud_id: v["id"].as_str().map(|s| s.to_owned()),
+                provider: CloudProvider::Azure,
+                resource_type: ResourceType::IamRole,
+                name: v["properties"]["roleName"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_owned(),
+                region: "global".to_owned(),
+                status: ResourceStatus::Available,
+                metadata: v.clone(),
+                tags: std::collections::HashMap::new(),
+                created_at: chrono::Utc::now(),
+                updated_at: chrono::Utc::now(),
+            })
+            .collect())
+    }
+
+    async fn create_role(&self, _region: &str, name: &str, trust_policy: &str) -> Result<CloudResource> {
+        let role_id = uuid::Uuid::new_v4();
+        let path = format!(
+            "/providers/Microsoft.Authorization/roleDefinitions/{}",
+            role_id
+        );
+        let body = serde_json::json!({
+            "properties": {
+                "roleName": name,
+                "description": trust_policy,
+                "type": "CustomRole",
+                "permissions": [{ "actions": ["*"], "notActions": [] }],
+                "assignableScopes": ["/"]
+            }
+        });
+        let data = self.client.put(&path, "2022-04-01", &body).await?;
+        Ok(CloudResource {
+            id: uuid::Uuid::new_v4(),
+            cloud_id: data["id"].as_str().map(|s| s.to_owned()),
+            provider: CloudProvider::Azure,
+            resource_type: ResourceType::IamRole,
+            name: name.to_owned(),
+            region: "global".to_owned(),
+            status: ResourceStatus::Available,
+            metadata: data,
+            tags: std::collections::HashMap::new(),
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        })
+    }
+
+    async fn delete_role(&self, _region: &str, name: &str) -> Result<()> {
+        if name.starts_with('/') {
+            self.client.delete(name, "2022-04-01").await
+        } else {
+            Err(CloudError::ProviderError(
+                "Azure role deletion requires a full role definition ID".into(),
+            ))
+        }
+    }
+
+    async fn list_policies(&self, _region: &str) -> Result<Vec<CloudResource>> {
+        let path = "/providers/Microsoft.Authorization/policyDefinitions";
+        let data = self.client.get(path, "2021-06-01").await?;
+        Ok(data["value"]
+            .as_array()
+            .unwrap_or(&vec![])
+            .iter()
+            .map(|v| CloudResource {
+                id: uuid::Uuid::new_v4(),
+                cloud_id: v["id"].as_str().map(|s| s.to_owned()),
+                provider: CloudProvider::Azure,
+                resource_type: ResourceType::IamPolicy,
+                name: v["name"].as_str().unwrap_or_default().to_owned(),
+                region: "global".to_owned(),
+                status: ResourceStatus::Available,
+                metadata: v.clone(),
+                tags: std::collections::HashMap::new(),
+                created_at: chrono::Utc::now(),
+                updated_at: chrono::Utc::now(),
+            })
+            .collect())
+    }
+
+    async fn attach_policy(&self, _region: &str, target: &str, policy_arn: &str) -> Result<()> {
+        let assignment_id = uuid::Uuid::new_v4();
+        let path = format!(
+            "/providers/Microsoft.Authorization/roleAssignments/{}",
+            assignment_id
+        );
+        let body = serde_json::json!({
+            "properties": {
+                "roleDefinitionId": policy_arn,
+                "principalId": target,
+            }
+        });
+        self.client.put(&path, "2022-04-01", &body).await?;
+        Ok(())
+    }
+
+    async fn detach_policy(&self, _region: &str, _target: &str, policy_arn: &str) -> Result<()> {
+        // policy_arn here is expected to be the role assignment ID.
+        if policy_arn.starts_with('/') {
+            self.client.delete(policy_arn, "2022-04-01").await
+        } else {
+            Err(CloudError::ProviderError(
+                "Azure detach_policy requires the full role assignment resource ID".into(),
+            ))
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// KmsProvider – Azure Key Vault
+// ---------------------------------------------------------------------------
+
+#[async_trait]
+impl KmsProvider for AzureSdkProvider {
+    async fn list_keys(&self, region: &str) -> Result<Vec<CloudResource>> {
+        let path = "/providers/Microsoft.KeyVault/vaults";
+        let data = self.client.get(path, MISC_API_VERSION).await?;
+        Ok(data["value"]
+            .as_array()
+            .unwrap_or(&vec![])
+            .iter()
+            .filter(|v| {
+                v["location"]
+                    .as_str()
+                    .map(|l| l.eq_ignore_ascii_case(region))
+                    .unwrap_or(false)
+            })
+            .map(|v| CloudResource {
+                id: uuid::Uuid::new_v4(),
+                cloud_id: v["id"].as_str().map(|s| s.to_owned()),
+                provider: CloudProvider::Azure,
+                resource_type: ResourceType::KmsKey,
+                name: v["name"].as_str().unwrap_or_default().to_owned(),
+                region: region.to_owned(),
+                status: ResourceStatus::Available,
+                metadata: v.clone(),
+                tags: std::collections::HashMap::new(),
+                created_at: chrono::Utc::now(),
+                updated_at: chrono::Utc::now(),
+            })
+            .collect())
+    }
+
+    async fn get_key(&self, region: &str, id: &str) -> Result<CloudResource> {
+        let path = if id.starts_with('/') {
+            id.to_owned()
+        } else {
+            format!(
+                "/resourceGroups/{}/providers/Microsoft.KeyVault/vaults/{}",
+                DEFAULT_RESOURCE_GROUP, id
+            )
+        };
+        let data = self.client.get(&path, MISC_API_VERSION).await?;
+        Ok(CloudResource {
+            id: uuid::Uuid::new_v4(),
+            cloud_id: data["id"].as_str().map(|s| s.to_owned()),
+            provider: CloudProvider::Azure,
+            resource_type: ResourceType::KmsKey,
+            name: data["name"].as_str().unwrap_or(id).to_owned(),
+            region: region.to_owned(),
+            status: ResourceStatus::Available,
+            metadata: data,
+            tags: std::collections::HashMap::new(),
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        })
+    }
+
+    async fn create_key(&self, region: &str, name: &str, _key_type: &str) -> Result<CloudResource> {
+        let path = format!(
+            "/resourceGroups/{}/providers/Microsoft.KeyVault/vaults/{}",
+            DEFAULT_RESOURCE_GROUP, name
+        );
+        let body = serde_json::json!({
+            "location": region,
+            "properties": {
+                "sku": { "family": "A", "name": "standard" },
+                "tenantId": "00000000-0000-0000-0000-000000000000",
+                "accessPolicies": [],
+                "enableSoftDelete": true,
+                "softDeleteRetentionInDays": 90,
+            }
+        });
+        let data = self.client.put(&path, MISC_API_VERSION, &body).await?;
+        Ok(CloudResource {
+            id: uuid::Uuid::new_v4(),
+            cloud_id: data["id"].as_str().map(|s| s.to_owned()),
+            provider: CloudProvider::Azure,
+            resource_type: ResourceType::KmsKey,
+            name: name.to_owned(),
+            region: region.to_owned(),
+            status: ResourceStatus::Creating,
+            metadata: data,
+            tags: std::collections::HashMap::new(),
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        })
+    }
+
+    async fn schedule_key_deletion(&self, _region: &str, id: &str) -> Result<()> {
+        let path = if id.starts_with('/') {
+            id.to_owned()
+        } else {
+            format!(
+                "/resourceGroups/{}/providers/Microsoft.KeyVault/vaults/{}",
+                DEFAULT_RESOURCE_GROUP, id
+            )
+        };
+        self.client.delete(&path, MISC_API_VERSION).await
+    }
+
+    async fn set_key_enabled(&self, _region: &str, id: &str, enabled: bool) -> Result<()> {
+        let path = if id.starts_with('/') {
+            id.to_owned()
+        } else {
+            format!(
+                "/resourceGroups/{}/providers/Microsoft.KeyVault/vaults/{}",
+                DEFAULT_RESOURCE_GROUP, id
+            )
+        };
+        // Read current vault, then update the enabledForDeployment property.
+        let current = self.client.get(&path, MISC_API_VERSION).await?;
+        let mut body = current.clone();
+        body["properties"]["enabledForDeployment"] = serde_json::json!(enabled);
+        self.client.put(&path, MISC_API_VERSION, &body).await?;
+        Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// AutoScalingProvider – Azure VM Scale Sets
+// ---------------------------------------------------------------------------
+
+#[async_trait]
+impl AutoScalingProvider for AzureSdkProvider {
+    async fn list_groups(&self, region: &str) -> Result<Vec<CloudResource>> {
+        let path = "/providers/Microsoft.Compute/virtualMachineScaleSets";
+        let data = self.client.get(path, VM_API_VERSION).await?;
+        Ok(data["value"]
+            .as_array()
+            .unwrap_or(&vec![])
+            .iter()
+            .filter(|v| {
+                v["location"]
+                    .as_str()
+                    .map(|l| l.eq_ignore_ascii_case(region))
+                    .unwrap_or(false)
+            })
+            .map(|v| CloudResource {
+                id: uuid::Uuid::new_v4(),
+                cloud_id: v["id"].as_str().map(|s| s.to_owned()),
+                provider: CloudProvider::Azure,
+                resource_type: ResourceType::AutoScalingGroup,
+                name: v["name"].as_str().unwrap_or_default().to_owned(),
+                region: region.to_owned(),
+                status: ResourceStatus::Available,
+                metadata: v.clone(),
+                tags: std::collections::HashMap::new(),
+                created_at: chrono::Utc::now(),
+                updated_at: chrono::Utc::now(),
+            })
+            .collect())
+    }
+
+    async fn get_group(&self, region: &str, id: &str) -> Result<CloudResource> {
+        let path = if id.starts_with('/') {
+            id.to_owned()
+        } else {
+            format!(
+                "/resourceGroups/{}/providers/Microsoft.Compute/virtualMachineScaleSets/{}",
+                DEFAULT_RESOURCE_GROUP, id
+            )
+        };
+        let data = self.client.get(&path, VM_API_VERSION).await?;
+        Ok(CloudResource {
+            id: uuid::Uuid::new_v4(),
+            cloud_id: data["id"].as_str().map(|s| s.to_owned()),
+            provider: CloudProvider::Azure,
+            resource_type: ResourceType::AutoScalingGroup,
+            name: data["name"].as_str().unwrap_or(id).to_owned(),
+            region: region.to_owned(),
+            status: ResourceStatus::Available,
+            metadata: data,
+            tags: std::collections::HashMap::new(),
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        })
+    }
+
+    async fn create_group(
+        &self,
+        region: &str,
+        name: &str,
+        min_size: u32,
+        max_size: u32,
+        desired: u32,
+    ) -> Result<CloudResource> {
+        let path = format!(
+            "/resourceGroups/{}/providers/Microsoft.Compute/virtualMachineScaleSets/{}",
+            DEFAULT_RESOURCE_GROUP, name
+        );
+        let body = serde_json::json!({
+            "location": region,
+            "sku": {
+                "name": "Standard_DS1_v2",
+                "tier": "Standard",
+                "capacity": desired,
+            },
+            "properties": {
+                "upgradePolicy": { "mode": "Automatic" },
+                "virtualMachineProfile": {
+                    "osProfile": {
+                        "computerNamePrefix": name,
+                        "adminUsername": "azureuser",
+                    },
+                    "storageProfile": {
+                        "imageReference": {
+                            "publisher": "Canonical",
+                            "offer": "0001-com-ubuntu-server-jammy",
+                            "sku": "22_04-lts",
+                            "version": "latest",
+                        },
+                        "osDisk": {
+                            "createOption": "FromImage",
+                            "managedDisk": { "storageAccountType": "Standard_LRS" },
+                        }
+                    },
+                    "networkProfile": {
+                        "networkInterfaceConfigurations": [],
+                    }
+                },
+                "overprovision": true,
+                "scaleInPolicy": {
+                    "rules": ["Default"],
+                },
+            },
+            "tags": {
+                "min_size": min_size.to_string(),
+                "max_size": max_size.to_string(),
+            }
+        });
+        let data = self.client.put(&path, VM_API_VERSION, &body).await?;
+        Ok(CloudResource {
+            id: uuid::Uuid::new_v4(),
+            cloud_id: data["id"].as_str().map(|s| s.to_owned()),
+            provider: CloudProvider::Azure,
+            resource_type: ResourceType::AutoScalingGroup,
+            name: name.to_owned(),
+            region: region.to_owned(),
+            status: ResourceStatus::Creating,
+            metadata: data,
+            tags: std::collections::HashMap::new(),
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        })
+    }
+
+    async fn delete_group(&self, _region: &str, id: &str) -> Result<()> {
+        let path = if id.starts_with('/') {
+            id.to_owned()
+        } else {
+            format!(
+                "/resourceGroups/{}/providers/Microsoft.Compute/virtualMachineScaleSets/{}",
+                DEFAULT_RESOURCE_GROUP, id
+            )
+        };
+        self.client.delete(&path, VM_API_VERSION).await
+    }
+
+    async fn set_desired_capacity(&self, _region: &str, id: &str, desired: u32) -> Result<()> {
+        let path = if id.starts_with('/') {
+            id.to_owned()
+        } else {
+            format!(
+                "/resourceGroups/{}/providers/Microsoft.Compute/virtualMachineScaleSets/{}",
+                DEFAULT_RESOURCE_GROUP, id
+            )
+        };
+        let current = self.client.get(&path, VM_API_VERSION).await?;
+        let mut body = current.clone();
+        body["sku"]["capacity"] = serde_json::json!(desired);
+        self.client.put(&path, VM_API_VERSION, &body).await?;
+        Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// VolumeProvider – Azure Managed Disks
+// ---------------------------------------------------------------------------
+
+#[async_trait]
+impl VolumeProvider for AzureSdkProvider {
+    async fn list_volumes(&self, region: &str) -> Result<Vec<CloudResource>> {
+        let path = "/providers/Microsoft.Compute/disks";
+        let data = self.client.get(path, VM_API_VERSION).await?;
+        Ok(data["value"]
+            .as_array()
+            .unwrap_or(&vec![])
+            .iter()
+            .filter(|v| {
+                v["location"]
+                    .as_str()
+                    .map(|l| l.eq_ignore_ascii_case(region))
+                    .unwrap_or(false)
+            })
+            .map(|v| CloudResource {
+                id: uuid::Uuid::new_v4(),
+                cloud_id: v["id"].as_str().map(|s| s.to_owned()),
+                provider: CloudProvider::Azure,
+                resource_type: ResourceType::Volume,
+                name: v["name"].as_str().unwrap_or_default().to_owned(),
+                region: region.to_owned(),
+                status: ResourceStatus::Available,
+                metadata: v.clone(),
+                tags: std::collections::HashMap::new(),
+                created_at: chrono::Utc::now(),
+                updated_at: chrono::Utc::now(),
+            })
+            .collect())
+    }
+
+    async fn create_volume(&self, region: &str, size_gb: i32, volume_type: &str, az: &str) -> Result<CloudResource> {
+        let name = format!("disk-{}", uuid::Uuid::new_v4().to_string().split('-').next().unwrap_or("x"));
+        let path = format!(
+            "/resourceGroups/{}/providers/Microsoft.Compute/disks/{}",
+            DEFAULT_RESOURCE_GROUP, name
+        );
+        let sku_name = match volume_type {
+            "ssd" | "Premium_LRS" => "Premium_LRS",
+            "standard" | "Standard_LRS" => "Standard_LRS",
+            _ => "StandardSSD_LRS",
+        };
+        let body = serde_json::json!({
+            "location": region,
+            "zones": [az],
+            "sku": { "name": sku_name },
+            "properties": {
+                "creationData": { "createOption": "Empty" },
+                "diskSizeGB": size_gb,
+            }
+        });
+        let data = self.client.put(&path, VM_API_VERSION, &body).await?;
+        Ok(CloudResource {
+            id: uuid::Uuid::new_v4(),
+            cloud_id: data["id"].as_str().map(|s| s.to_owned()),
+            provider: CloudProvider::Azure,
+            resource_type: ResourceType::Volume,
+            name,
+            region: region.to_owned(),
+            status: ResourceStatus::Creating,
+            metadata: data,
+            tags: std::collections::HashMap::new(),
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        })
+    }
+
+    async fn attach_volume(&self, _region: &str, volume_id: &str, instance_id: &str, _device: &str) -> Result<()> {
+        // Attaching a disk to a VM requires updating the VM's storageProfile.
+        let vm_path = if instance_id.starts_with('/') {
+            instance_id.to_owned()
+        } else {
+            format!(
+                "/resourceGroups/{}/providers/Microsoft.Compute/virtualMachines/{}",
+                DEFAULT_RESOURCE_GROUP, instance_id
+            )
+        };
+        let vm_data = self.client.get(&vm_path, VM_API_VERSION).await?;
+        let mut body = vm_data.clone();
+        let disk_id = if volume_id.starts_with('/') {
+            volume_id.to_owned()
+        } else {
+            format!(
+                "/resourceGroups/{}/providers/Microsoft.Compute/disks/{}",
+                DEFAULT_RESOURCE_GROUP, volume_id
+            )
+        };
+        let new_disk = serde_json::json!({
+            "lun": 0,
+            "createOption": "Attach",
+            "managedDisk": { "id": disk_id }
+        });
+        if let Some(disks) = body["properties"]["storageProfile"]["dataDisks"].as_array_mut() {
+            disks.push(new_disk);
+        } else {
+            body["properties"]["storageProfile"]["dataDisks"] = serde_json::json!([new_disk]);
+        }
+        self.client.put(&vm_path, VM_API_VERSION, &body).await?;
+        Ok(())
+    }
+
+    async fn detach_volume(&self, _region: &str, volume_id: &str) -> Result<()> {
+        // Full detach requires knowing the VM — this is a best-effort stub.
+        let _ = volume_id;
+        Err(CloudError::ProviderError(
+            "Azure disk detach requires the VM resource ID; use the full resource path".into(),
+        ))
+    }
+
+    async fn delete_volume(&self, _region: &str, id: &str) -> Result<()> {
+        let path = if id.starts_with('/') {
+            id.to_owned()
+        } else {
+            format!(
+                "/resourceGroups/{}/providers/Microsoft.Compute/disks/{}",
+                DEFAULT_RESOURCE_GROUP, id
+            )
+        };
+        self.client.delete(&path, VM_API_VERSION).await
+    }
+
+    async fn create_volume_snapshot(&self, _region: &str, volume_id: &str, name: &str) -> Result<CloudResource> {
+        let path = format!(
+            "/resourceGroups/{}/providers/Microsoft.Compute/snapshots/{}",
+            DEFAULT_RESOURCE_GROUP, name
+        );
+        let disk_id = if volume_id.starts_with('/') {
+            volume_id.to_owned()
+        } else {
+            format!(
+                "/resourceGroups/{}/providers/Microsoft.Compute/disks/{}",
+                DEFAULT_RESOURCE_GROUP, volume_id
+            )
+        };
+        let body = serde_json::json!({
+            "location": "eastus",
+            "properties": {
+                "creationData": {
+                    "createOption": "Copy",
+                    "sourceResourceId": disk_id,
+                }
+            }
+        });
+        let data = self.client.put(&path, VM_API_VERSION, &body).await?;
+        Ok(CloudResource {
+            id: uuid::Uuid::new_v4(),
+            cloud_id: data["id"].as_str().map(|s| s.to_owned()),
+            provider: CloudProvider::Azure,
+            resource_type: ResourceType::Snapshot,
+            name: name.to_owned(),
+            region: "eastus".to_owned(),
+            status: ResourceStatus::Creating,
+            metadata: data,
+            tags: std::collections::HashMap::new(),
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        })
+    }
 }

@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import type { Node, Edge } from '@xyflow/react'
+import { apiClient } from '@/lib/api-client'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -436,6 +437,8 @@ export const useInfrastructureStore = create<InfrastructureState>((set, get) => 
     const projects = loadFromStorage().map(p => p.id === updated.id ? updated : p)
     saveToStorage(projects)
     set({ projects, currentProject: updated })
+    // Sync to backend
+    apiClient.put(`/cloud/designs/${updated.id}`, updated).catch(() => {})
   },
 
   loadProject: (id) => {

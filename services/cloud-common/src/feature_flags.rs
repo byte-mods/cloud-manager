@@ -22,7 +22,7 @@ impl FeatureFlags {
         Self {
             use_mock_data: env::var("CLOUD_USE_MOCK_DATA")
                 .map(|v| v == "true" || v == "1")
-                .unwrap_or(true), // Default to mock mode for safety
+                .unwrap_or(false), // Default to real mode — set CLOUD_USE_MOCK_DATA=true for development without credentials
 
             enable_cache: env::var("CLOUD_ENABLE_CACHE")
                 .map(|v| v == "true" || v == "1")

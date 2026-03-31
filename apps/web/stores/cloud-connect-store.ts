@@ -1,4 +1,5 @@
 import { create } from 'zustand'
+import { apiClient } from '@/lib/api-client'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -90,6 +91,13 @@ type CloudConnectState = {
   services: DiscoveredService[]
   selectedServiceId: string | null
   activities: ActivityEvent[]
+  loading: boolean
+  error: string | null
+  initialized: boolean
+
+  // Fetch
+  fetchConnections: () => Promise<void>
+  fetchServices: (provider: string) => Promise<void>
 
   // Account actions
   addAccount: (account: CloudAccount) => void
@@ -1421,26 +1429,60 @@ const seedActivities: ActivityEvent[] = [
 // ---------------------------------------------------------------------------
 
 export const useCloudConnectStore = create<CloudConnectState>((set, get) => ({
-  accounts: seedAccounts,
-  services: allServices,
+  accounts: [] as CloudAccount[],
+  services: [] as DiscoveredService[],
   selectedServiceId: null,
-  activities: seedActivities,
+  activities: [] as ActivityEvent[],
+  loading: false,
+  error: null as string | null,
+  initialized: false,
 
-  addAccount: (account) =>
-    set((state) => ({ accounts: [...state.accounts, account] })),
+  fetchConnections: async () => {
+    if (get().initialized) return
+    set({ loading: true, error: null })
+    try {
+      const data = await apiClient.get('/cloud/connections')
+      const accounts = (data as any).connections ?? []
+      set({ accounts, initialized: true, loading: false })
+    } catch (e: any) {
+      set({ error: e.message, loading: false, initialized: true })
+    }
+  },
 
-  removeAccount: (id) =>
+  fetchServices: async (provider: string) => {
+    try {
+      const data = await apiClient.get(`/cloud/connections/${provider}/services`)
+      const newServices = (data as any).services ?? []
+      set((state) => {
+        const otherServices = state.services.filter((s) => s.provider !== provider)
+        return { services: [...otherServices, ...newServices] }
+      })
+    } catch { /* keep existing */ }
+  },
+
+  addAccount: (account) => {
+    set((state) => ({ accounts: [...state.accounts, account] }))
+    apiClient.post(`/cloud/connections/${account.provider}/connect`, account).catch(() => {})
+  },
+
+  removeAccount: (id) => {
+    const account = get().accounts.find((a) => a.id === id)
     set((state) => ({
       accounts: state.accounts.filter((a) => a.id !== id),
       services: state.services.filter((s) => s.accountId !== id),
-    })),
+    }))
+    if (account) apiClient.post(`/cloud/connections/${account.provider}/disconnect`, {}).catch(() => {})
+  },
 
-  syncAccount: (id) =>
+  syncAccount: (id) => {
+    const account = get().accounts.find((a) => a.id === id)
     set((state) => ({
       accounts: state.accounts.map((a) =>
         a.id === id ? { ...a, status: 'syncing' as const, lastSynced: new Date().toISOString() } : a,
       ),
-    })),
+    }))
+    if (account) apiClient.post(`/cloud/connections/${account.provider}/sync`, {}).catch(() => {})
+  },
 
   getServicesByAccount: (accountId) =>
     get().services.filter((s) => s.accountId === accountId),
