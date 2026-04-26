@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use crate::error::CloudError;
 use crate::models::{CloudProvider, ResourceListResponse};
+use crate::providers;
 use crate::providers::ProviderContext;
 
 #[derive(Debug, Deserialize)]
@@ -45,13 +46,13 @@ fn default_region(provider: CloudProvider, query_region: Option<&str>) -> String
 pub async fn list_web_acls(
     path: web::Path<ProviderPath>,
     query: web::Query<RegionQuery>,
-    _ctx: web::Data<Arc<ProviderContext>>,
+    ctx: web::Data<Arc<ProviderContext>>,
 ) -> Result<HttpResponse, CloudError> {
     let provider = parse_provider(&path.provider)?;
     let region = default_region(provider, query.region.as_deref());
-    let _ = region;
+    let waf = providers::get_waf_provider(provider, ctx.get_ref());
 
-    let acls = vec![];
+    let acls = waf.list_web_acls(&region).await?;
     Ok(HttpResponse::Ok().json(ResourceListResponse {
         total: acls.len(),
         resources: acls,
@@ -63,31 +64,27 @@ pub async fn list_web_acls(
 pub async fn get_web_acl(
     path: web::Path<ResourcePath>,
     query: web::Query<RegionQuery>,
-    _ctx: web::Data<Arc<ProviderContext>>,
+    ctx: web::Data<Arc<ProviderContext>>,
 ) -> Result<HttpResponse, CloudError> {
     let provider = parse_provider(&path.provider)?;
     let region = default_region(provider, query.region.as_deref());
-    let _ = region;
+    let waf = providers::get_waf_provider(provider, ctx.get_ref());
 
-    let acls = vec![];
-    Ok(HttpResponse::Ok().json(ResourceListResponse {
-        total: acls.len(),
-        resources: acls,
-        next_token: None,
-    }))
+    let acl = waf.get_web_acl(&region, &path.id).await?;
+    Ok(HttpResponse::Ok().json(acl))
 }
 
 /// GET /api/v1/cloud/{provider}/waf/acls/{id}/rules
 pub async fn list_rules(
     path: web::Path<ResourcePath>,
     query: web::Query<RegionQuery>,
-    _ctx: web::Data<Arc<ProviderContext>>,
+    ctx: web::Data<Arc<ProviderContext>>,
 ) -> Result<HttpResponse, CloudError> {
     let provider = parse_provider(&path.provider)?;
     let region = default_region(provider, query.region.as_deref());
-    let _ = region;
+    let waf = providers::get_waf_provider(provider, ctx.get_ref());
 
-    let rules = vec![];
+    let rules = waf.list_rules(&region, &path.id).await?;
     Ok(HttpResponse::Ok().json(ResourceListResponse {
         total: rules.len(),
         resources: rules,
@@ -99,18 +96,27 @@ pub async fn list_rules(
 pub async fn create_web_acl(
     path: web::Path<ProviderPath>,
     body: web::Json<CreateWebAclRequest>,
-    _ctx: web::Data<Arc<ProviderContext>>,
+    ctx: web::Data<Arc<ProviderContext>>,
 ) -> Result<HttpResponse, CloudError> {
-    let _provider = parse_provider(&path.provider)?;
-    let _config = body.into_inner();
-    Ok(HttpResponse::Created().json(serde_json::json!({"status": "created"})))
+    let provider = parse_provider(&path.provider)?;
+    let config = body.into_inner();
+    let region = default_region(provider, None);
+    let waf = providers::get_waf_provider(provider, ctx.get_ref());
+
+    let acl = waf.create_web_acl(&region, &config.name).await?;
+    Ok(HttpResponse::Created().json(acl))
 }
 
 /// DELETE /api/v1/cloud/{provider}/waf/acls/{id}
 pub async fn delete_web_acl(
     path: web::Path<ResourcePath>,
-    _ctx: web::Data<Arc<ProviderContext>>,
+    query: web::Query<RegionQuery>,
+    ctx: web::Data<Arc<ProviderContext>>,
 ) -> Result<HttpResponse, CloudError> {
-    let _provider = parse_provider(&path.provider)?;
+    let provider = parse_provider(&path.provider)?;
+    let region = default_region(provider, query.region.as_deref());
+    let waf = providers::get_waf_provider(provider, ctx.get_ref());
+
+    waf.delete_web_acl(&region, &path.id).await?;
     Ok(HttpResponse::NoContent().finish())
 }

@@ -521,83 +521,570 @@ impl NetworkingProvider for AzureSdkProvider {
             .collect())
     }
 
-    // Azure stubs for new networking operations
+    // --- Elastic IPs → Azure Public IP Addresses ---
 
-    async fn list_elastic_ips(&self, _region: &str) -> Result<Vec<CloudResource>> { Ok(Vec::new()) }
-    async fn allocate_elastic_ip(&self, _region: &str) -> Result<CloudResource> {
-        Err(CloudError::ProviderError("Azure: allocate_elastic_ip not yet implemented for SDK mode".into()))
-    }
-    async fn associate_elastic_ip(&self, _region: &str, _eip_id: &str, _instance_id: &str) -> Result<()> {
-        Err(CloudError::ProviderError("Azure: associate_elastic_ip not yet implemented for SDK mode".into()))
-    }
-    async fn disassociate_elastic_ip(&self, _region: &str, _association_id: &str) -> Result<()> {
-        Err(CloudError::ProviderError("Azure: disassociate_elastic_ip not yet implemented for SDK mode".into()))
-    }
-    async fn release_elastic_ip(&self, _region: &str, _allocation_id: &str) -> Result<()> {
-        Err(CloudError::ProviderError("Azure: release_elastic_ip not yet implemented for SDK mode".into()))
-    }
-
-    async fn list_nat_gateways(&self, _region: &str) -> Result<Vec<CloudResource>> { Ok(Vec::new()) }
-    async fn create_nat_gateway(&self, _region: &str, _subnet_id: &str, _eip_allocation_id: &str) -> Result<CloudResource> {
-        Err(CloudError::ProviderError("Azure: create_nat_gateway not yet implemented for SDK mode".into()))
-    }
-    async fn delete_nat_gateway(&self, _region: &str, _id: &str) -> Result<()> {
-        Err(CloudError::ProviderError("Azure: delete_nat_gateway not yet implemented for SDK mode".into()))
+    async fn list_elastic_ips(&self, region: &str) -> Result<Vec<CloudResource>> {
+        let path = "/providers/Microsoft.Network/publicIPAddresses";
+        let data = self.client.get(path, NETWORK_API_VERSION).await?;
+        Ok(data["value"].as_array().unwrap_or(&vec![]).iter()
+            .filter(|pip| {
+                pip["location"].as_str()
+                    .map(|loc| loc.eq_ignore_ascii_case(region))
+                    .unwrap_or(false)
+            })
+            .map(|pip| azure_mapper::public_ip_to_resource(pip, region))
+            .collect())
     }
 
-    async fn list_internet_gateways(&self, _region: &str) -> Result<Vec<CloudResource>> { Ok(Vec::new()) }
-    async fn create_internet_gateway(&self, _region: &str) -> Result<CloudResource> {
-        Err(CloudError::ProviderError("Azure: create_internet_gateway not yet implemented for SDK mode".into()))
-    }
-    async fn attach_internet_gateway(&self, _region: &str, _igw_id: &str, _vpc_id: &str) -> Result<()> {
-        Err(CloudError::ProviderError("Azure: attach_internet_gateway not yet implemented for SDK mode".into()))
-    }
-    async fn detach_internet_gateway(&self, _region: &str, _igw_id: &str, _vpc_id: &str) -> Result<()> {
-        Err(CloudError::ProviderError("Azure: detach_internet_gateway not yet implemented for SDK mode".into()))
-    }
-    async fn delete_internet_gateway(&self, _region: &str, _id: &str) -> Result<()> {
-        Err(CloudError::ProviderError("Azure: delete_internet_gateway not yet implemented for SDK mode".into()))
-    }
-
-    async fn list_route_tables(&self, _region: &str) -> Result<Vec<CloudResource>> { Ok(Vec::new()) }
-    async fn create_route_table(&self, _region: &str, _vpc_id: &str) -> Result<CloudResource> {
-        Err(CloudError::ProviderError("Azure: create_route_table not yet implemented for SDK mode".into()))
-    }
-    async fn add_route(&self, _region: &str, _route_table_id: &str, _destination_cidr: &str, _target_id: &str) -> Result<()> {
-        Err(CloudError::ProviderError("Azure: add_route not yet implemented for SDK mode".into()))
-    }
-    async fn delete_route(&self, _region: &str, _route_table_id: &str, _destination_cidr: &str) -> Result<()> {
-        Err(CloudError::ProviderError("Azure: delete_route not yet implemented for SDK mode".into()))
-    }
-    async fn associate_route_table(&self, _region: &str, _route_table_id: &str, _subnet_id: &str) -> Result<String> {
-        Err(CloudError::ProviderError("Azure: associate_route_table not yet implemented for SDK mode".into()))
-    }
-    async fn delete_route_table(&self, _region: &str, _id: &str) -> Result<()> {
-        Err(CloudError::ProviderError("Azure: delete_route_table not yet implemented for SDK mode".into()))
+    async fn allocate_elastic_ip(&self, region: &str) -> Result<CloudResource> {
+        let name = format!("pip-{}", uuid::Uuid::new_v4().to_string().split('-').next().unwrap_or("x"));
+        let path = format!(
+            "/resourceGroups/{}/providers/Microsoft.Network/publicIPAddresses/{}",
+            DEFAULT_RESOURCE_GROUP, name
+        );
+        let body = serde_json::json!({
+            "location": region,
+            "sku": { "name": "Standard" },
+            "properties": {
+                "publicIPAllocationMethod": "Static",
+                "publicIPAddressVersion": "IPv4",
+            }
+        });
+        let data = self.client.put(&path, NETWORK_API_VERSION, &body).await?;
+        Ok(azure_mapper::public_ip_to_resource(&data, region))
     }
 
-    async fn create_security_group(&self, _region: &str, _name: &str, _description: &str, _vpc_id: &str) -> Result<CloudResource> {
-        Err(CloudError::ProviderError("Azure: create_security_group not yet implemented for SDK mode".into()))
-    }
-    async fn add_security_group_rule(&self, _region: &str, _sg_id: &str, _rule: SecurityGroupRule) -> Result<()> {
-        Err(CloudError::ProviderError("Azure: add_security_group_rule not yet implemented for SDK mode".into()))
-    }
-    async fn remove_security_group_rule(&self, _region: &str, _sg_id: &str, _rule: SecurityGroupRule) -> Result<()> {
-        Err(CloudError::ProviderError("Azure: remove_security_group_rule not yet implemented for SDK mode".into()))
-    }
-    async fn delete_security_group(&self, _region: &str, _id: &str) -> Result<()> {
-        Err(CloudError::ProviderError("Azure: delete_security_group not yet implemented for SDK mode".into()))
+    async fn associate_elastic_ip(&self, _region: &str, eip_id: &str, instance_id: &str) -> Result<()> {
+        // Get the VM's primary NIC, then update it with the public IP
+        let vm_path = if instance_id.starts_with('/') {
+            instance_id.to_owned()
+        } else {
+            format!("/resourceGroups/{}/providers/Microsoft.Compute/virtualMachines/{}", DEFAULT_RESOURCE_GROUP, instance_id)
+        };
+        let vm_data = self.client.get(&vm_path, VM_API_VERSION).await?;
+        let nic_id = vm_data["properties"]["networkProfile"]["networkInterfaces"]
+            .as_array()
+            .and_then(|a| a.first())
+            .and_then(|n| n["id"].as_str())
+            .ok_or_else(|| CloudError::ProviderError("VM has no network interface".into()))?;
+        // Strip subscription prefix for path
+        let nic_path = if let Some(idx) = nic_id.find("/resourceGroups") {
+            &nic_id[idx..]
+        } else {
+            nic_id
+        };
+        let mut nic_data = self.client.get(nic_path, NETWORK_API_VERSION).await?;
+        let pip_id = if eip_id.starts_with('/') {
+            eip_id.to_owned()
+        } else {
+            format!("/subscriptions/{}/resourceGroups/{}/providers/Microsoft.Network/publicIPAddresses/{}",
+                self.client.get(&"/", "2020-01-01").await.unwrap_or_default()["subscriptionId"].as_str().unwrap_or_default(),
+                DEFAULT_RESOURCE_GROUP, eip_id)
+        };
+        if let Some(configs) = nic_data["properties"]["ipConfigurations"].as_array_mut() {
+            if let Some(config) = configs.first_mut() {
+                config["properties"]["publicIPAddress"] = serde_json::json!({"id": pip_id});
+            }
+        }
+        self.client.put(nic_path, NETWORK_API_VERSION, &nic_data).await?;
+        Ok(())
     }
 
-    async fn list_vpc_peering_connections(&self, _region: &str) -> Result<Vec<CloudResource>> { Ok(Vec::new()) }
-    async fn create_vpc_peering(&self, _region: &str, _vpc_id: &str, _peer_vpc_id: &str) -> Result<CloudResource> {
-        Err(CloudError::ProviderError("Azure: create_vpc_peering not yet implemented for SDK mode".into()))
+    async fn disassociate_elastic_ip(&self, _region: &str, association_id: &str) -> Result<()> {
+        // association_id is the NIC resource ID
+        let nic_path = if association_id.starts_with('/') {
+            if let Some(idx) = association_id.find("/resourceGroups") {
+                &association_id[idx..]
+            } else {
+                association_id
+            }
+        } else {
+            return Err(CloudError::BadRequest("Expected NIC resource ID as association_id".into()));
+        };
+        let mut nic_data = self.client.get(nic_path, NETWORK_API_VERSION).await?;
+        if let Some(configs) = nic_data["properties"]["ipConfigurations"].as_array_mut() {
+            if let Some(config) = configs.first_mut() {
+                config["properties"].as_object_mut()
+                    .map(|obj| obj.remove("publicIPAddress"));
+            }
+        }
+        self.client.put(nic_path, NETWORK_API_VERSION, &nic_data).await?;
+        Ok(())
     }
+
+    async fn release_elastic_ip(&self, _region: &str, allocation_id: &str) -> Result<()> {
+        let path = if allocation_id.starts_with('/') {
+            if let Some(idx) = allocation_id.find("/resourceGroups") {
+                allocation_id[idx..].to_owned()
+            } else {
+                allocation_id.to_owned()
+            }
+        } else {
+            format!(
+                "/resourceGroups/{}/providers/Microsoft.Network/publicIPAddresses/{}",
+                DEFAULT_RESOURCE_GROUP, allocation_id
+            )
+        };
+        self.client.delete(&path, NETWORK_API_VERSION).await
+    }
+
+    // --- NAT Gateways → Azure NAT Gateway (first-class resource) ---
+
+    async fn list_nat_gateways(&self, region: &str) -> Result<Vec<CloudResource>> {
+        let path = "/providers/Microsoft.Network/natGateways";
+        let data = self.client.get(path, NETWORK_API_VERSION).await?;
+        Ok(data["value"].as_array().unwrap_or(&vec![]).iter()
+            .filter(|nat| {
+                nat["location"].as_str()
+                    .map(|loc| loc.eq_ignore_ascii_case(region))
+                    .unwrap_or(false)
+            })
+            .map(|nat| azure_mapper::nat_gateway_to_resource(nat, region))
+            .collect())
+    }
+
+    async fn create_nat_gateway(&self, region: &str, _subnet_id: &str, eip_allocation_id: &str) -> Result<CloudResource> {
+        let name = format!("natgw-{}", uuid::Uuid::new_v4().to_string().split('-').next().unwrap_or("x"));
+        let path = format!(
+            "/resourceGroups/{}/providers/Microsoft.Network/natGateways/{}",
+            DEFAULT_RESOURCE_GROUP, name
+        );
+        let pip_id = if eip_allocation_id.starts_with('/') {
+            eip_allocation_id.to_owned()
+        } else {
+            format!(
+                "/resourceGroups/{}/providers/Microsoft.Network/publicIPAddresses/{}",
+                DEFAULT_RESOURCE_GROUP, eip_allocation_id
+            )
+        };
+        let body = serde_json::json!({
+            "location": region,
+            "sku": { "name": "Standard" },
+            "properties": {
+                "idleTimeoutInMinutes": 4,
+                "publicIpAddresses": [{ "id": pip_id }],
+            }
+        });
+        let data = self.client.put(&path, NETWORK_API_VERSION, &body).await?;
+        Ok(azure_mapper::nat_gateway_to_resource(&data, region))
+    }
+
+    async fn delete_nat_gateway(&self, _region: &str, id: &str) -> Result<()> {
+        let path = if id.starts_with('/') {
+            if let Some(idx) = id.find("/resourceGroups") {
+                id[idx..].to_owned()
+            } else {
+                id.to_owned()
+            }
+        } else {
+            format!(
+                "/resourceGroups/{}/providers/Microsoft.Network/natGateways/{}",
+                DEFAULT_RESOURCE_GROUP, id
+            )
+        };
+        self.client.delete(&path, NETWORK_API_VERSION).await
+    }
+
+    // --- Internet Gateways → Azure Route Tables with 0.0.0.0/0 → Internet ---
+    // Azure has no explicit internet gateway. Internet access is implicit but
+    // controlled via Route Tables. We map IGW operations to route tables
+    // that have a default route with Internet next hop.
+
+    async fn list_internet_gateways(&self, region: &str) -> Result<Vec<CloudResource>> {
+        let path = "/providers/Microsoft.Network/routeTables";
+        let data = self.client.get(path, NETWORK_API_VERSION).await?;
+        let mut igws = Vec::new();
+        for rt in data["value"].as_array().unwrap_or(&vec![]) {
+            let loc = rt["location"].as_str().unwrap_or_default();
+            if !loc.eq_ignore_ascii_case(region) {
+                continue;
+            }
+            // Check if this route table has a 0.0.0.0/0 → Internet route
+            let has_internet_route = rt["properties"]["routes"].as_array()
+                .map(|routes| routes.iter().any(|r| {
+                    r["properties"]["addressPrefix"].as_str() == Some("0.0.0.0/0")
+                        && r["properties"]["nextHopType"].as_str() == Some("Internet")
+                }))
+                .unwrap_or(false);
+            if has_internet_route {
+                let mut resource = azure_mapper::route_table_to_resource(rt, region);
+                resource.resource_type = ResourceType::InternetGateway;
+                igws.push(resource);
+            }
+        }
+        Ok(igws)
+    }
+
+    async fn create_internet_gateway(&self, region: &str) -> Result<CloudResource> {
+        // Create a route table with a 0.0.0.0/0 → Internet route
+        let name = format!("igw-rt-{}", uuid::Uuid::new_v4().to_string().split('-').next().unwrap_or("x"));
+        let path = format!(
+            "/resourceGroups/{}/providers/Microsoft.Network/routeTables/{}",
+            DEFAULT_RESOURCE_GROUP, name
+        );
+        let body = serde_json::json!({
+            "location": region,
+            "properties": {
+                "routes": [{
+                    "name": "internet-route",
+                    "properties": {
+                        "addressPrefix": "0.0.0.0/0",
+                        "nextHopType": "Internet",
+                    }
+                }]
+            }
+        });
+        let data = self.client.put(&path, NETWORK_API_VERSION, &body).await?;
+        let mut resource = azure_mapper::route_table_to_resource(&data, region);
+        resource.resource_type = ResourceType::InternetGateway;
+        Ok(resource)
+    }
+
+    async fn attach_internet_gateway(&self, _region: &str, igw_id: &str, vpc_id: &str) -> Result<()> {
+        // Associate the route table (IGW) with the VNet's first subnet
+        // vpc_id should be a subnet resource ID for Azure
+        let subnet_path = if vpc_id.starts_with('/') {
+            if let Some(idx) = vpc_id.find("/resourceGroups") {
+                vpc_id[idx..].to_owned()
+            } else {
+                vpc_id.to_owned()
+            }
+        } else {
+            return Err(CloudError::BadRequest("Expected subnet resource ID for vpc_id in Azure".into()));
+        };
+        let rt_id = if igw_id.starts_with('/') {
+            igw_id.to_owned()
+        } else {
+            format!(
+                "/resourceGroups/{}/providers/Microsoft.Network/routeTables/{}",
+                DEFAULT_RESOURCE_GROUP, igw_id
+            )
+        };
+        let mut subnet_data = self.client.get(&subnet_path, NETWORK_API_VERSION).await?;
+        subnet_data["properties"]["routeTable"] = serde_json::json!({"id": rt_id});
+        self.client.put(&subnet_path, NETWORK_API_VERSION, &subnet_data).await?;
+        Ok(())
+    }
+
+    async fn detach_internet_gateway(&self, _region: &str, _igw_id: &str, vpc_id: &str) -> Result<()> {
+        let subnet_path = if vpc_id.starts_with('/') {
+            if let Some(idx) = vpc_id.find("/resourceGroups") {
+                vpc_id[idx..].to_owned()
+            } else {
+                vpc_id.to_owned()
+            }
+        } else {
+            return Err(CloudError::BadRequest("Expected subnet resource ID for vpc_id in Azure".into()));
+        };
+        let mut subnet_data = self.client.get(&subnet_path, NETWORK_API_VERSION).await?;
+        subnet_data["properties"].as_object_mut()
+            .map(|obj| obj.remove("routeTable"));
+        self.client.put(&subnet_path, NETWORK_API_VERSION, &subnet_data).await?;
+        Ok(())
+    }
+
+    async fn delete_internet_gateway(&self, _region: &str, id: &str) -> Result<()> {
+        let path = if id.starts_with('/') {
+            if let Some(idx) = id.find("/resourceGroups") {
+                id[idx..].to_owned()
+            } else {
+                id.to_owned()
+            }
+        } else {
+            format!(
+                "/resourceGroups/{}/providers/Microsoft.Network/routeTables/{}",
+                DEFAULT_RESOURCE_GROUP, id
+            )
+        };
+        self.client.delete(&path, NETWORK_API_VERSION).await
+    }
+
+    // --- Route Tables → Azure Route Tables (first-class resource) ---
+
+    async fn list_route_tables(&self, region: &str) -> Result<Vec<CloudResource>> {
+        let path = "/providers/Microsoft.Network/routeTables";
+        let data = self.client.get(path, NETWORK_API_VERSION).await?;
+        Ok(data["value"].as_array().unwrap_or(&vec![]).iter()
+            .filter(|rt| {
+                rt["location"].as_str()
+                    .map(|loc| loc.eq_ignore_ascii_case(region))
+                    .unwrap_or(false)
+            })
+            .map(|rt| azure_mapper::route_table_to_resource(rt, region))
+            .collect())
+    }
+
+    async fn create_route_table(&self, region: &str, _vpc_id: &str) -> Result<CloudResource> {
+        let name = format!("rt-{}", uuid::Uuid::new_v4().to_string().split('-').next().unwrap_or("x"));
+        let path = format!(
+            "/resourceGroups/{}/providers/Microsoft.Network/routeTables/{}",
+            DEFAULT_RESOURCE_GROUP, name
+        );
+        let body = serde_json::json!({
+            "location": region,
+            "properties": {}
+        });
+        let data = self.client.put(&path, NETWORK_API_VERSION, &body).await?;
+        Ok(azure_mapper::route_table_to_resource(&data, region))
+    }
+
+    async fn add_route(&self, _region: &str, route_table_id: &str, destination_cidr: &str, target_id: &str) -> Result<()> {
+        let route_name = format!("route-{}", uuid::Uuid::new_v4().to_string().split('-').next().unwrap_or("x"));
+        let rt_path = if route_table_id.starts_with('/') {
+            if let Some(idx) = route_table_id.find("/resourceGroups") {
+                route_table_id[idx..].to_owned()
+            } else {
+                route_table_id.to_owned()
+            }
+        } else {
+            format!(
+                "/resourceGroups/{}/providers/Microsoft.Network/routeTables/{}",
+                DEFAULT_RESOURCE_GROUP, route_table_id
+            )
+        };
+        let path = format!("{}/routes/{}", rt_path, route_name);
+        let body = serde_json::json!({
+            "properties": {
+                "addressPrefix": destination_cidr,
+                "nextHopType": "VirtualAppliance",
+                "nextHopIpAddress": target_id,
+            }
+        });
+        self.client.put(&path, NETWORK_API_VERSION, &body).await?;
+        Ok(())
+    }
+
+    async fn delete_route(&self, _region: &str, route_table_id: &str, destination_cidr: &str) -> Result<()> {
+        // destination_cidr is used as route name identifier
+        let rt_path = if route_table_id.starts_with('/') {
+            if let Some(idx) = route_table_id.find("/resourceGroups") {
+                route_table_id[idx..].to_owned()
+            } else {
+                route_table_id.to_owned()
+            }
+        } else {
+            format!(
+                "/resourceGroups/{}/providers/Microsoft.Network/routeTables/{}",
+                DEFAULT_RESOURCE_GROUP, route_table_id
+            )
+        };
+        let path = format!("{}/routes/{}", rt_path, destination_cidr);
+        self.client.delete(&path, NETWORK_API_VERSION).await
+    }
+
+    async fn associate_route_table(&self, _region: &str, route_table_id: &str, subnet_id: &str) -> Result<String> {
+        let subnet_path = if subnet_id.starts_with('/') {
+            if let Some(idx) = subnet_id.find("/resourceGroups") {
+                subnet_id[idx..].to_owned()
+            } else {
+                subnet_id.to_owned()
+            }
+        } else {
+            return Err(CloudError::BadRequest("Expected subnet resource ID".into()));
+        };
+        let rt_id = if route_table_id.starts_with('/') {
+            route_table_id.to_owned()
+        } else {
+            format!(
+                "/resourceGroups/{}/providers/Microsoft.Network/routeTables/{}",
+                DEFAULT_RESOURCE_GROUP, route_table_id
+            )
+        };
+        let mut subnet_data = self.client.get(&subnet_path, NETWORK_API_VERSION).await?;
+        subnet_data["properties"]["routeTable"] = serde_json::json!({"id": rt_id});
+        self.client.put(&subnet_path, NETWORK_API_VERSION, &subnet_data).await?;
+        Ok(format!("{}/{}", route_table_id, subnet_id))
+    }
+
+    async fn delete_route_table(&self, _region: &str, id: &str) -> Result<()> {
+        let path = if id.starts_with('/') {
+            if let Some(idx) = id.find("/resourceGroups") {
+                id[idx..].to_owned()
+            } else {
+                id.to_owned()
+            }
+        } else {
+            format!(
+                "/resourceGroups/{}/providers/Microsoft.Network/routeTables/{}",
+                DEFAULT_RESOURCE_GROUP, id
+            )
+        };
+        self.client.delete(&path, NETWORK_API_VERSION).await
+    }
+
+    // --- Security Group CRUD → Azure Network Security Groups (NSGs) ---
+
+    async fn create_security_group(&self, region: &str, name: &str, description: &str, _vpc_id: &str) -> Result<CloudResource> {
+        let path = format!(
+            "/resourceGroups/{}/providers/Microsoft.Network/networkSecurityGroups/{}",
+            DEFAULT_RESOURCE_GROUP, name
+        );
+        let body = serde_json::json!({
+            "location": region,
+            "tags": { "description": description },
+            "properties": {}
+        });
+        let data = self.client.put(&path, NETWORK_API_VERSION, &body).await?;
+        Ok(azure_mapper::nsg_to_resource(&data, region))
+    }
+
+    async fn add_security_group_rule(&self, _region: &str, sg_id: &str, rule: SecurityGroupRule) -> Result<()> {
+        let rule_name = format!("rule-{}", uuid::Uuid::new_v4().to_string().split('-').next().unwrap_or("x"));
+        let nsg_path = if sg_id.starts_with('/') {
+            if let Some(idx) = sg_id.find("/resourceGroups") {
+                sg_id[idx..].to_owned()
+            } else {
+                sg_id.to_owned()
+            }
+        } else {
+            format!(
+                "/resourceGroups/{}/providers/Microsoft.Network/networkSecurityGroups/{}",
+                DEFAULT_RESOURCE_GROUP, sg_id
+            )
+        };
+        let path = format!("{}/securityRules/{}", nsg_path, rule_name);
+        let direction = if rule.direction.eq_ignore_ascii_case("ingress") { "Inbound" } else { "Outbound" };
+        let protocol = match rule.protocol.to_lowercase().as_str() {
+            "tcp" => "Tcp",
+            "udp" => "Udp",
+            "icmp" => "Icmp",
+            _ => "*",
+        };
+        let body = serde_json::json!({
+            "properties": {
+                "protocol": protocol,
+                "sourcePortRange": "*",
+                "destinationPortRange": if rule.from_port == rule.to_port {
+                    format!("{}", rule.from_port)
+                } else {
+                    format!("{}-{}", rule.from_port, rule.to_port)
+                },
+                "sourceAddressPrefix": rule.cidr,
+                "destinationAddressPrefix": "*",
+                "access": "Allow",
+                "priority": 100,
+                "direction": direction,
+                "description": rule.description.unwrap_or_default(),
+            }
+        });
+        self.client.put(&path, NETWORK_API_VERSION, &body).await?;
+        Ok(())
+    }
+
+    async fn remove_security_group_rule(&self, _region: &str, sg_id: &str, rule: SecurityGroupRule) -> Result<()> {
+        // Use the rule description as the rule name to delete, or derive from params
+        let rule_name = rule.description.unwrap_or_default();
+        if rule_name.is_empty() {
+            return Err(CloudError::BadRequest("Rule description must contain the security rule name to delete".into()));
+        }
+        let nsg_path = if sg_id.starts_with('/') {
+            if let Some(idx) = sg_id.find("/resourceGroups") {
+                sg_id[idx..].to_owned()
+            } else {
+                sg_id.to_owned()
+            }
+        } else {
+            format!(
+                "/resourceGroups/{}/providers/Microsoft.Network/networkSecurityGroups/{}",
+                DEFAULT_RESOURCE_GROUP, sg_id
+            )
+        };
+        let path = format!("{}/securityRules/{}", nsg_path, rule_name);
+        self.client.delete(&path, NETWORK_API_VERSION).await
+    }
+
+    async fn delete_security_group(&self, _region: &str, id: &str) -> Result<()> {
+        let path = if id.starts_with('/') {
+            if let Some(idx) = id.find("/resourceGroups") {
+                id[idx..].to_owned()
+            } else {
+                id.to_owned()
+            }
+        } else {
+            format!(
+                "/resourceGroups/{}/providers/Microsoft.Network/networkSecurityGroups/{}",
+                DEFAULT_RESOURCE_GROUP, id
+            )
+        };
+        self.client.delete(&path, NETWORK_API_VERSION).await
+    }
+
+    // --- VPC Peering → Azure VNet Peering ---
+
+    async fn list_vpc_peering_connections(&self, region: &str) -> Result<Vec<CloudResource>> {
+        // List all VNets, then collect peerings from each
+        let vnet_path = "/providers/Microsoft.Network/virtualNetworks";
+        let data = self.client.get(vnet_path, NETWORK_API_VERSION).await?;
+        let mut peerings = Vec::new();
+        for vnet in data["value"].as_array().unwrap_or(&vec![]) {
+            let loc = vnet["location"].as_str().unwrap_or_default();
+            if !loc.eq_ignore_ascii_case(region) {
+                continue;
+            }
+            if let Some(vnet_id) = vnet["id"].as_str() {
+                let peering_path = if let Some(idx) = vnet_id.find("/resourceGroups") {
+                    format!("{}/virtualNetworkPeerings", &vnet_id[idx..])
+                } else {
+                    continue;
+                };
+                match self.client.get(&peering_path, NETWORK_API_VERSION).await {
+                    Ok(peering_data) => {
+                        for p in peering_data["value"].as_array().unwrap_or(&vec![]) {
+                            peerings.push(azure_mapper::vnet_peering_to_resource(p, region));
+                        }
+                    }
+                    Err(_) => continue,
+                }
+            }
+        }
+        Ok(peerings)
+    }
+
+    async fn create_vpc_peering(&self, _region: &str, vpc_id: &str, peer_vpc_id: &str) -> Result<CloudResource> {
+        let peering_name = format!("peer-{}", uuid::Uuid::new_v4().to_string().split('-').next().unwrap_or("x"));
+        let vnet_path = if vpc_id.starts_with('/') {
+            if let Some(idx) = vpc_id.find("/resourceGroups") {
+                vpc_id[idx..].to_owned()
+            } else {
+                vpc_id.to_owned()
+            }
+        } else {
+            format!(
+                "/resourceGroups/{}/providers/Microsoft.Network/virtualNetworks/{}",
+                DEFAULT_RESOURCE_GROUP, vpc_id
+            )
+        };
+        let path = format!("{}/virtualNetworkPeerings/{}", vnet_path, peering_name);
+        let body = serde_json::json!({
+            "properties": {
+                "remoteVirtualNetwork": { "id": peer_vpc_id },
+                "allowVirtualNetworkAccess": true,
+                "allowForwardedTraffic": false,
+                "allowGatewayTransit": false,
+                "useRemoteGateways": false,
+            }
+        });
+        let data = self.client.put(&path, NETWORK_API_VERSION, &body).await?;
+        Ok(azure_mapper::vnet_peering_to_resource(&data, "global"))
+    }
+
     async fn accept_vpc_peering(&self, _region: &str, _peering_id: &str) -> Result<()> {
-        Err(CloudError::ProviderError("Azure: accept_vpc_peering not yet implemented for SDK mode".into()))
+        // Azure VNet peering is auto-accepted when both sides create peerings.
+        // No explicit accept action needed.
+        Ok(())
     }
-    async fn delete_vpc_peering(&self, _region: &str, _peering_id: &str) -> Result<()> {
-        Err(CloudError::ProviderError("Azure: delete_vpc_peering not yet implemented for SDK mode".into()))
+
+    async fn delete_vpc_peering(&self, _region: &str, peering_id: &str) -> Result<()> {
+        let path = if peering_id.starts_with('/') {
+            if let Some(idx) = peering_id.find("/resourceGroups") {
+                peering_id[idx..].to_owned()
+            } else {
+                peering_id.to_owned()
+            }
+        } else {
+            return Err(CloudError::BadRequest("Expected full peering resource ID".into()));
+        };
+        self.client.delete(&path, NETWORK_API_VERSION).await
     }
 }
 

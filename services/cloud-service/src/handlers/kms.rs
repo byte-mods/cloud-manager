@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use crate::error::CloudError;
 use crate::models::{CloudProvider, ResourceListResponse};
+use crate::providers;
 use crate::providers::ProviderContext;
 
 #[derive(Debug, Deserialize)]
@@ -56,13 +57,14 @@ fn default_region(provider: CloudProvider, query_region: Option<&str>) -> String
 pub async fn list_keys(
     path: web::Path<ProviderPath>,
     query: web::Query<RegionQuery>,
-    _ctx: web::Data<Arc<ProviderContext>>,
+    ctx: web::Data<Arc<ProviderContext>>,
 ) -> Result<HttpResponse, CloudError> {
     let provider = parse_provider(&path.provider)?;
     let region = default_region(provider, query.region.as_deref());
-    let _ = region;
 
-    let keys = vec![];
+    let kms = providers::get_kms_provider(provider, ctx.get_ref());
+    let keys = kms.list_keys(&region).await?;
+
     Ok(HttpResponse::Ok().json(ResourceListResponse {
         total: keys.len(),
         resources: keys,
@@ -74,39 +76,45 @@ pub async fn list_keys(
 pub async fn get_key(
     path: web::Path<ResourcePath>,
     query: web::Query<RegionQuery>,
-    _ctx: web::Data<Arc<ProviderContext>>,
+    ctx: web::Data<Arc<ProviderContext>>,
 ) -> Result<HttpResponse, CloudError> {
     let provider = parse_provider(&path.provider)?;
     let region = default_region(provider, query.region.as_deref());
-    let _ = region;
 
-    let keys = vec![];
-    Ok(HttpResponse::Ok().json(ResourceListResponse {
-        total: keys.len(),
-        resources: keys,
-        next_token: None,
-    }))
+    let kms = providers::get_kms_provider(provider, ctx.get_ref());
+    let key = kms.get_key(&region, &path.id).await?;
+
+    Ok(HttpResponse::Ok().json(key))
 }
 
 /// POST /api/v1/cloud/{provider}/kms/keys
 pub async fn create_key(
     path: web::Path<ProviderPath>,
     body: web::Json<CreateKeyRequest>,
-    _ctx: web::Data<Arc<ProviderContext>>,
+    ctx: web::Data<Arc<ProviderContext>>,
 ) -> Result<HttpResponse, CloudError> {
-    let _provider = parse_provider(&path.provider)?;
-    let _config = body.into_inner();
-    Ok(HttpResponse::Created().json(serde_json::json!({"status": "created"})))
+    let provider = parse_provider(&path.provider)?;
+    let config = body.into_inner();
+    let region = default_region(provider, None);
+
+    let kms = providers::get_kms_provider(provider, ctx.get_ref());
+    let key = kms.create_key(&region, &config.alias, &config.key_spec.unwrap_or_else(|| "SYMMETRIC_DEFAULT".to_string())).await?;
+
+    Ok(HttpResponse::Created().json(key))
 }
 
 /// DELETE /api/v1/cloud/{provider}/kms/keys/{id}
 pub async fn schedule_deletion(
     path: web::Path<ResourcePath>,
-    body: web::Json<ScheduleDeletionRequest>,
-    _ctx: web::Data<Arc<ProviderContext>>,
+    _body: web::Json<ScheduleDeletionRequest>,
+    ctx: web::Data<Arc<ProviderContext>>,
 ) -> Result<HttpResponse, CloudError> {
-    let _provider = parse_provider(&path.provider)?;
-    let _config = body.into_inner();
+    let provider = parse_provider(&path.provider)?;
+    let region = default_region(provider, None);
+
+    let kms = providers::get_kms_provider(provider, ctx.get_ref());
+    kms.schedule_key_deletion(&region, &path.id).await?;
+
     Ok(HttpResponse::Ok().json(serde_json::json!({"status": "deletion_scheduled"})))
 }
 
@@ -114,9 +122,14 @@ pub async fn schedule_deletion(
 pub async fn set_enabled(
     path: web::Path<ResourcePath>,
     body: web::Json<SetEnabledRequest>,
-    _ctx: web::Data<Arc<ProviderContext>>,
+    ctx: web::Data<Arc<ProviderContext>>,
 ) -> Result<HttpResponse, CloudError> {
-    let _provider = parse_provider(&path.provider)?;
-    let _config = body.into_inner();
+    let provider = parse_provider(&path.provider)?;
+    let config = body.into_inner();
+    let region = default_region(provider, None);
+
+    let kms = providers::get_kms_provider(provider, ctx.get_ref());
+    kms.set_key_enabled(&region, &path.id, config.enabled).await?;
+
     Ok(HttpResponse::Ok().json(serde_json::json!({"status": "key_updated"})))
 }

@@ -344,6 +344,119 @@ pub fn nsg_to_resource(nsg: &serde_json::Value, region: &str) -> CloudResource {
     }
 }
 
+pub fn public_ip_to_resource(pip: &serde_json::Value, region: &str) -> CloudResource {
+    let name = pip["name"].as_str().unwrap_or_default().to_owned();
+    let pip_id = pip["id"].as_str().unwrap_or_default().to_owned();
+    let status = map_provisioning_status(
+        pip["properties"]["provisioningState"].as_str().unwrap_or(""),
+    );
+
+    CloudResource {
+        id: Uuid::new_v4(),
+        cloud_id: Some(pip_id),
+        provider: CloudProvider::Azure,
+        resource_type: ResourceType::ElasticIp,
+        name,
+        region: region.to_owned(),
+        status,
+        metadata: serde_json::json!({
+            "ip_address": pip["properties"]["ipAddress"].as_str().unwrap_or_default(),
+            "allocation_method": pip["properties"]["publicIPAllocationMethod"].as_str().unwrap_or("Static"),
+            "sku": pip["sku"]["name"].as_str().unwrap_or("Standard"),
+            "ip_version": pip["properties"]["publicIPAddressVersion"].as_str().unwrap_or("IPv4"),
+            "associated_nic": pip["properties"]["ipConfiguration"]["id"].as_str().unwrap_or_default(),
+        }),
+        tags: extract_tags(pip),
+        created_at: Utc::now(),
+        updated_at: Utc::now(),
+    }
+}
+
+pub fn nat_gateway_to_resource(nat: &serde_json::Value, region: &str) -> CloudResource {
+    let name = nat["name"].as_str().unwrap_or_default().to_owned();
+    let nat_id = nat["id"].as_str().unwrap_or_default().to_owned();
+    let status = map_provisioning_status(
+        nat["properties"]["provisioningState"].as_str().unwrap_or(""),
+    );
+
+    CloudResource {
+        id: Uuid::new_v4(),
+        cloud_id: Some(nat_id),
+        provider: CloudProvider::Azure,
+        resource_type: ResourceType::NatGateway,
+        name,
+        region: region.to_owned(),
+        status,
+        metadata: serde_json::json!({
+            "idle_timeout_minutes": nat["properties"]["idleTimeoutInMinutes"].as_u64().unwrap_or(4),
+            "sku": nat["sku"]["name"].as_str().unwrap_or("Standard"),
+            "public_ip_addresses": nat["properties"]["publicIpAddresses"].as_array().map(|a| a.len()).unwrap_or(0),
+            "subnets": nat["properties"]["subnets"].as_array().map(|a| a.len()).unwrap_or(0),
+        }),
+        tags: extract_tags(nat),
+        created_at: Utc::now(),
+        updated_at: Utc::now(),
+    }
+}
+
+pub fn route_table_to_resource(rt: &serde_json::Value, region: &str) -> CloudResource {
+    let name = rt["name"].as_str().unwrap_or_default().to_owned();
+    let rt_id = rt["id"].as_str().unwrap_or_default().to_owned();
+    let status = map_provisioning_status(
+        rt["properties"]["provisioningState"].as_str().unwrap_or(""),
+    );
+
+    CloudResource {
+        id: Uuid::new_v4(),
+        cloud_id: Some(rt_id),
+        provider: CloudProvider::Azure,
+        resource_type: ResourceType::RouteTable,
+        name,
+        region: region.to_owned(),
+        status,
+        metadata: serde_json::json!({
+            "routes": rt["properties"]["routes"].as_array().map(|a| a.len()).unwrap_or(0),
+            "subnets": rt["properties"]["subnets"].as_array().map(|a| a.len()).unwrap_or(0),
+            "disable_bgp_route_propagation": rt["properties"]["disableBgpRoutePropagation"].as_bool().unwrap_or(false),
+        }),
+        tags: extract_tags(rt),
+        created_at: Utc::now(),
+        updated_at: Utc::now(),
+    }
+}
+
+pub fn vnet_peering_to_resource(peering: &serde_json::Value, region: &str) -> CloudResource {
+    let name = peering["name"].as_str().unwrap_or_default().to_owned();
+    let peering_id = peering["id"].as_str().unwrap_or_default().to_owned();
+    let state = peering["properties"]["peeringState"].as_str().unwrap_or("Disconnected");
+    let status = match state {
+        "Connected" => ResourceStatus::Available,
+        "Initiated" => ResourceStatus::Pending,
+        _ => ResourceStatus::Pending,
+    };
+
+    CloudResource {
+        id: Uuid::new_v4(),
+        cloud_id: Some(peering_id),
+        provider: CloudProvider::Azure,
+        resource_type: ResourceType::VpcPeering,
+        name,
+        region: region.to_owned(),
+        status,
+        metadata: serde_json::json!({
+            "peering_state": state,
+            "remote_virtual_network": peering["properties"]["remoteVirtualNetwork"]["id"].as_str().unwrap_or_default(),
+            "allow_virtual_network_access": peering["properties"]["allowVirtualNetworkAccess"].as_bool().unwrap_or(true),
+            "allow_forwarded_traffic": peering["properties"]["allowForwardedTraffic"].as_bool().unwrap_or(false),
+            "allow_gateway_transit": peering["properties"]["allowGatewayTransit"].as_bool().unwrap_or(false),
+            "use_remote_gateways": peering["properties"]["useRemoteGateways"].as_bool().unwrap_or(false),
+        }),
+        tags: HashMap::new(),
+        created_at: Utc::now(),
+        updated_at: Utc::now(),
+    }
+}
+
 fn extract_tags(json: &serde_json::Value) -> HashMap<String, String> {
     json["tags"]
         .as_object()

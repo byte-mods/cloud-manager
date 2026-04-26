@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use crate::error::CloudError;
 use crate::models::{CloudProvider, ResourceListResponse};
+use crate::providers;
 use crate::providers::ProviderContext;
 
 #[derive(Debug, Deserialize)]
@@ -52,13 +53,13 @@ fn default_region(provider: CloudProvider, query_region: Option<&str>) -> String
 pub async fn list_groups(
     path: web::Path<ProviderPath>,
     query: web::Query<RegionQuery>,
-    _ctx: web::Data<Arc<ProviderContext>>,
+    ctx: web::Data<Arc<ProviderContext>>,
 ) -> Result<HttpResponse, CloudError> {
     let provider = parse_provider(&path.provider)?;
     let region = default_region(provider, query.region.as_deref());
-    let _ = region;
 
-    let groups = vec![];
+    let asg = providers::get_autoscaling_provider(provider, ctx.get_ref());
+    let groups = asg.list_groups(&region).await?;
     Ok(HttpResponse::Ok().json(ResourceListResponse {
         total: groups.len(),
         resources: groups,
@@ -70,37 +71,48 @@ pub async fn list_groups(
 pub async fn get_group(
     path: web::Path<ResourcePath>,
     query: web::Query<RegionQuery>,
-    _ctx: web::Data<Arc<ProviderContext>>,
+    ctx: web::Data<Arc<ProviderContext>>,
 ) -> Result<HttpResponse, CloudError> {
     let provider = parse_provider(&path.provider)?;
     let region = default_region(provider, query.region.as_deref());
-    let _ = region;
 
-    let groups = vec![];
-    Ok(HttpResponse::Ok().json(ResourceListResponse {
-        total: groups.len(),
-        resources: groups,
-        next_token: None,
-    }))
+    let asg = providers::get_autoscaling_provider(provider, ctx.get_ref());
+    let group = asg.get_group(&region, &path.id).await?;
+    Ok(HttpResponse::Ok().json(group))
 }
 
 /// POST /api/v1/cloud/{provider}/autoscaling/groups
 pub async fn create_group(
     path: web::Path<ProviderPath>,
     body: web::Json<CreateGroupRequest>,
-    _ctx: web::Data<Arc<ProviderContext>>,
+    ctx: web::Data<Arc<ProviderContext>>,
 ) -> Result<HttpResponse, CloudError> {
-    let _provider = parse_provider(&path.provider)?;
-    let _config = body.into_inner();
-    Ok(HttpResponse::Created().json(serde_json::json!({"status": "created"})))
+    let provider = parse_provider(&path.provider)?;
+    let config = body.into_inner();
+    let region = default_region(provider, None);
+
+    let asg = providers::get_autoscaling_provider(provider, ctx.get_ref());
+    let group = asg.create_group(
+        &region,
+        &config.name,
+        config.min_size.unwrap_or(1),
+        config.max_size.unwrap_or(10),
+        config.desired_capacity.unwrap_or(1),
+    ).await?;
+    Ok(HttpResponse::Created().json(group))
 }
 
 /// DELETE /api/v1/cloud/{provider}/autoscaling/groups/{id}
 pub async fn delete_group(
     path: web::Path<ResourcePath>,
-    _ctx: web::Data<Arc<ProviderContext>>,
+    query: web::Query<RegionQuery>,
+    ctx: web::Data<Arc<ProviderContext>>,
 ) -> Result<HttpResponse, CloudError> {
-    let _provider = parse_provider(&path.provider)?;
+    let provider = parse_provider(&path.provider)?;
+    let region = default_region(provider, query.region.as_deref());
+
+    let asg = providers::get_autoscaling_provider(provider, ctx.get_ref());
+    asg.delete_group(&region, &path.id).await?;
     Ok(HttpResponse::NoContent().finish())
 }
 
@@ -108,9 +120,14 @@ pub async fn delete_group(
 pub async fn set_capacity(
     path: web::Path<ResourcePath>,
     body: web::Json<SetCapacityRequest>,
-    _ctx: web::Data<Arc<ProviderContext>>,
+    query: web::Query<RegionQuery>,
+    ctx: web::Data<Arc<ProviderContext>>,
 ) -> Result<HttpResponse, CloudError> {
-    let _provider = parse_provider(&path.provider)?;
-    let _config = body.into_inner();
+    let provider = parse_provider(&path.provider)?;
+    let config = body.into_inner();
+    let region = default_region(provider, query.region.as_deref());
+
+    let asg = providers::get_autoscaling_provider(provider, ctx.get_ref());
+    asg.set_desired_capacity(&region, &path.id, config.desired_capacity).await?;
     Ok(HttpResponse::Ok().json(serde_json::json!({"status": "capacity_updated"})))
 }

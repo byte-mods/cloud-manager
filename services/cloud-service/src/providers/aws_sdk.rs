@@ -8,7 +8,7 @@ use crate::error::CloudError;
 use crate::models::*;
 use crate::providers::aws_mapper;
 use crate::traits::compute::Result;
-use crate::traits::{ApiGatewayProvider, CacheDbProvider, CdnProvider, ComputeProvider, ContainerRegistryProvider, DatabaseProvider, KubernetesProvider, NetworkingProvider, NoSqlProvider, ServerlessProvider, StorageProvider, TrafficProvider, WorkflowProvider};
+use crate::traits::{ApiGatewayProvider, AutoScalingProvider, CacheDbProvider, CdnProvider, ComputeProvider, ContainerRegistryProvider, DatabaseProvider, DnsProvider, IamProvider, IoTProvider, KmsProvider, KubernetesProvider, MessagingProvider, MlProvider, NetworkingProvider, NoSqlProvider, ServerlessProvider, StorageProvider, TrafficProvider, VolumeProvider, WafProvider, WorkflowProvider};
 
 /// AWS provider backed by real AWS SDK calls.
 pub struct AwsSdkProvider {
@@ -2742,6 +2742,60 @@ impl AwsSdkProvider {
             .map_err(|e| CloudError::ProviderError(e.to_string()))?;
         Ok(aws_sdk_elasticache::Client::new(&cfg))
     }
+
+    fn iam_client(&self, region: &str) -> Result<aws_sdk_iam::Client> {
+        let cfg = self.credentials.aws_config_for_region(region)
+            .map_err(|e| CloudError::ProviderError(e.to_string()))?;
+        Ok(aws_sdk_iam::Client::new(&cfg))
+    }
+
+    fn route53_client(&self, region: &str) -> Result<aws_sdk_route53::Client> {
+        let cfg = self.credentials.aws_config_for_region(region)
+            .map_err(|e| CloudError::ProviderError(e.to_string()))?;
+        Ok(aws_sdk_route53::Client::new(&cfg))
+    }
+
+    fn wafv2_client(&self, region: &str) -> Result<aws_sdk_wafv2::Client> {
+        let cfg = self.credentials.aws_config_for_region(region)
+            .map_err(|e| CloudError::ProviderError(e.to_string()))?;
+        Ok(aws_sdk_wafv2::Client::new(&cfg))
+    }
+
+    fn sqs_client(&self, region: &str) -> Result<aws_sdk_sqs::Client> {
+        let cfg = self.credentials.aws_config_for_region(region)
+            .map_err(|e| CloudError::ProviderError(e.to_string()))?;
+        Ok(aws_sdk_sqs::Client::new(&cfg))
+    }
+
+    fn sns_client(&self, region: &str) -> Result<aws_sdk_sns::Client> {
+        let cfg = self.credentials.aws_config_for_region(region)
+            .map_err(|e| CloudError::ProviderError(e.to_string()))?;
+        Ok(aws_sdk_sns::Client::new(&cfg))
+    }
+
+    fn kms_real_client(&self, region: &str) -> Result<aws_sdk_kms::Client> {
+        let cfg = self.credentials.aws_config_for_region(region)
+            .map_err(|e| CloudError::ProviderError(e.to_string()))?;
+        Ok(aws_sdk_kms::Client::new(&cfg))
+    }
+
+    fn autoscaling_client(&self, region: &str) -> Result<aws_sdk_autoscaling::Client> {
+        let cfg = self.credentials.aws_config_for_region(region)
+            .map_err(|e| CloudError::ProviderError(e.to_string()))?;
+        Ok(aws_sdk_autoscaling::Client::new(&cfg))
+    }
+
+    fn iot_client(&self, region: &str) -> Result<aws_sdk_iot::Client> {
+        let cfg = self.credentials.aws_config_for_region(region)
+            .map_err(|e| CloudError::ProviderError(e.to_string()))?;
+        Ok(aws_sdk_iot::Client::new(&cfg))
+    }
+
+    fn sagemaker_client(&self, region: &str) -> Result<aws_sdk_sagemaker::Client> {
+        let cfg = self.credentials.aws_config_for_region(region)
+            .map_err(|e| CloudError::ProviderError(e.to_string()))?;
+        Ok(aws_sdk_sagemaker::Client::new(&cfg))
+    }
 }
 
 #[async_trait]
@@ -3111,5 +3165,1360 @@ impl CacheDbProvider for AwsSdkProvider {
             .map_err(|e| CloudError::ProviderError(format!("ElastiCache delete: {}", e)))?;
 
         Ok(())
+    }
+}
+
+// ===========================================================================
+// IAM — AWS IAM SDK
+// ===========================================================================
+
+#[async_trait]
+impl IamProvider for AwsSdkProvider {
+    async fn list_users(&self, region: &str) -> Result<Vec<CloudResource>> {
+        let region = self.resolve_region(region);
+        tracing::info!(provider = "aws", region = region, "Listing IAM users via SDK");
+
+        let client = self.iam_client(region)?;
+        let resp = client
+            .list_users()
+            .send()
+            .await
+            .map_err(|e| CloudError::ProviderError(format!("IAM list_users: {}", e)))?;
+
+        let now = chrono::Utc::now();
+        let users = resp
+            .users()
+            .iter()
+            .map(|u| CloudResource {
+                id: uuid::Uuid::new_v4(),
+                cloud_id: Some(u.user_id().to_owned()),
+                provider: CloudProvider::Aws,
+                resource_type: ResourceType::IamUser,
+                name: u.user_name().to_owned(),
+                region: "global".to_owned(),
+                status: ResourceStatus::Running,
+                metadata: serde_json::json!({
+                    "arn": u.arn(),
+                    "path": u.path(),
+                }),
+                tags: Default::default(),
+                created_at: now,
+                updated_at: now,
+            })
+            .collect();
+        Ok(users)
+    }
+
+    async fn create_user(&self, region: &str, username: &str) -> Result<CloudResource> {
+        let region = self.resolve_region(region);
+        tracing::info!(provider = "aws", region = region, username = username, "Creating IAM user via SDK");
+
+        let client = self.iam_client(region)?;
+        let resp = client
+            .create_user()
+            .user_name(username)
+            .send()
+            .await
+            .map_err(|e| CloudError::ProviderError(format!("IAM create_user: {}", e)))?;
+
+        let now = chrono::Utc::now();
+        let user = resp.user().ok_or_else(|| CloudError::ProviderError("No user in response".into()))?;
+        Ok(CloudResource {
+            id: uuid::Uuid::new_v4(),
+            cloud_id: Some(user.user_id().to_owned()),
+            provider: CloudProvider::Aws,
+            resource_type: ResourceType::IamUser,
+            name: user.user_name().to_owned(),
+            region: "global".to_owned(),
+            status: ResourceStatus::Running,
+            metadata: serde_json::json!({ "arn": user.arn(), "path": user.path() }),
+            tags: Default::default(),
+            created_at: now,
+            updated_at: now,
+        })
+    }
+
+    async fn delete_user(&self, region: &str, username: &str) -> Result<()> {
+        let region = self.resolve_region(region);
+        tracing::info!(provider = "aws", region = region, username = username, "Deleting IAM user via SDK");
+
+        let client = self.iam_client(region)?;
+        client.delete_user().user_name(username).send().await
+            .map_err(|e| CloudError::ProviderError(format!("IAM delete_user: {}", e)))?;
+        Ok(())
+    }
+
+    async fn list_roles(&self, region: &str) -> Result<Vec<CloudResource>> {
+        let region = self.resolve_region(region);
+        tracing::info!(provider = "aws", region = region, "Listing IAM roles via SDK");
+
+        let client = self.iam_client(region)?;
+        let resp = client.list_roles().send().await
+            .map_err(|e| CloudError::ProviderError(format!("IAM list_roles: {}", e)))?;
+
+        let now = chrono::Utc::now();
+        let roles = resp.roles().iter().map(|r| CloudResource {
+            id: uuid::Uuid::new_v4(),
+            cloud_id: Some(r.role_id().to_owned()),
+            provider: CloudProvider::Aws,
+            resource_type: ResourceType::IamRole,
+            name: r.role_name().to_owned(),
+            region: "global".to_owned(),
+            status: ResourceStatus::Running,
+            metadata: serde_json::json!({
+                "arn": r.arn(),
+                "path": r.path(),
+                "description": r.description().unwrap_or_default(),
+            }),
+            tags: Default::default(),
+            created_at: now,
+            updated_at: now,
+        }).collect();
+        Ok(roles)
+    }
+
+    async fn create_role(&self, region: &str, name: &str, trust_policy: &str) -> Result<CloudResource> {
+        let region = self.resolve_region(region);
+        tracing::info!(provider = "aws", region = region, name = name, "Creating IAM role via SDK");
+
+        let client = self.iam_client(region)?;
+        let resp = client.create_role().role_name(name).assume_role_policy_document(trust_policy)
+            .send().await
+            .map_err(|e| CloudError::ProviderError(format!("IAM create_role: {}", e)))?;
+
+        let now = chrono::Utc::now();
+        let role = resp.role().ok_or_else(|| CloudError::ProviderError("No role in response".into()))?;
+        Ok(CloudResource {
+            id: uuid::Uuid::new_v4(),
+            cloud_id: Some(role.role_id().to_owned()),
+            provider: CloudProvider::Aws,
+            resource_type: ResourceType::IamRole,
+            name: role.role_name().to_owned(),
+            region: "global".to_owned(),
+            status: ResourceStatus::Running,
+            metadata: serde_json::json!({ "arn": role.arn(), "path": role.path() }),
+            tags: Default::default(),
+            created_at: now,
+            updated_at: now,
+        })
+    }
+
+    async fn delete_role(&self, region: &str, name: &str) -> Result<()> {
+        let region = self.resolve_region(region);
+        tracing::info!(provider = "aws", region = region, name = name, "Deleting IAM role via SDK");
+        let client = self.iam_client(region)?;
+        client.delete_role().role_name(name).send().await
+            .map_err(|e| CloudError::ProviderError(format!("IAM delete_role: {}", e)))?;
+        Ok(())
+    }
+
+    async fn list_policies(&self, region: &str) -> Result<Vec<CloudResource>> {
+        let region = self.resolve_region(region);
+        tracing::info!(provider = "aws", region = region, "Listing IAM policies via SDK");
+
+        let client = self.iam_client(region)?;
+        let resp = client.list_policies().scope(aws_sdk_iam::types::PolicyScopeType::Local)
+            .send().await
+            .map_err(|e| CloudError::ProviderError(format!("IAM list_policies: {}", e)))?;
+
+        let now = chrono::Utc::now();
+        let policies = resp.policies().iter().map(|p| CloudResource {
+            id: uuid::Uuid::new_v4(),
+            cloud_id: p.policy_id().map(|s| s.to_owned()),
+            provider: CloudProvider::Aws,
+            resource_type: ResourceType::IamPolicy,
+            name: p.policy_name().unwrap_or_default().to_owned(),
+            region: "global".to_owned(),
+            status: ResourceStatus::Running,
+            metadata: serde_json::json!({
+                "arn": p.arn().unwrap_or_default(),
+                "description": p.description().unwrap_or_default(),
+                "attachment_count": p.attachment_count(),
+            }),
+            tags: Default::default(),
+            created_at: now,
+            updated_at: now,
+        }).collect();
+        Ok(policies)
+    }
+
+    async fn attach_policy(&self, region: &str, target: &str, policy_arn: &str) -> Result<()> {
+        let region = self.resolve_region(region);
+        tracing::info!(provider = "aws", region = region, target = target, policy_arn = policy_arn, "Attaching IAM policy via SDK");
+        let client = self.iam_client(region)?;
+        client.attach_role_policy().role_name(target).policy_arn(policy_arn).send().await
+            .map_err(|e| CloudError::ProviderError(format!("IAM attach_role_policy: {}", e)))?;
+        Ok(())
+    }
+
+    async fn detach_policy(&self, region: &str, target: &str, policy_arn: &str) -> Result<()> {
+        let region = self.resolve_region(region);
+        tracing::info!(provider = "aws", region = region, target = target, policy_arn = policy_arn, "Detaching IAM policy via SDK");
+        let client = self.iam_client(region)?;
+        client.detach_role_policy().role_name(target).policy_arn(policy_arn).send().await
+            .map_err(|e| CloudError::ProviderError(format!("IAM detach_role_policy: {}", e)))?;
+        Ok(())
+    }
+}
+
+// ===========================================================================
+// DNS — AWS Route 53 SDK
+// ===========================================================================
+
+#[async_trait]
+impl DnsProvider for AwsSdkProvider {
+    async fn list_hosted_zones(&self, region: &str) -> Result<Vec<CloudResource>> {
+        let region = self.resolve_region(region);
+        tracing::info!(provider = "aws", region = region, "Listing Route53 hosted zones via SDK");
+
+        let client = self.route53_client(region)?;
+        let resp = client.list_hosted_zones().send().await
+            .map_err(|e| CloudError::ProviderError(format!("Route53 list_hosted_zones: {}", e)))?;
+
+        let now = chrono::Utc::now();
+        let zones = resp.hosted_zones().iter().map(|z| {
+            let zone_id = z.id().trim_start_matches("/hostedzone/").to_owned();
+            CloudResource {
+                id: uuid::Uuid::new_v4(),
+                cloud_id: Some(zone_id),
+                provider: CloudProvider::Aws,
+                resource_type: ResourceType::DnsZone,
+                name: z.name().to_owned(),
+                region: "global".to_owned(),
+                status: ResourceStatus::Running,
+                metadata: serde_json::json!({
+                    "record_count": z.resource_record_set_count(),
+                    "private": z.config().map(|c| c.private_zone()).unwrap_or(false),
+                    "comment": z.config().and_then(|c| c.comment()).unwrap_or_default(),
+                }),
+                tags: Default::default(),
+                created_at: now,
+                updated_at: now,
+            }
+        }).collect();
+        Ok(zones)
+    }
+
+    async fn list_records(&self, region: &str, zone_id: &str) -> Result<Vec<CloudResource>> {
+        let region = self.resolve_region(region);
+        tracing::info!(provider = "aws", region = region, zone_id = zone_id, "Listing Route53 records via SDK");
+
+        let client = self.route53_client(region)?;
+        let resp = client.list_resource_record_sets().hosted_zone_id(zone_id).send().await
+            .map_err(|e| CloudError::ProviderError(format!("Route53 list_records: {}", e)))?;
+
+        let now = chrono::Utc::now();
+        let records = resp.resource_record_sets().iter().map(|r| {
+            let values: Vec<String> = r.resource_records().iter().map(|rr| rr.value().to_owned()).collect();
+            let rtype = r.r#type().as_str();
+            CloudResource {
+                id: uuid::Uuid::new_v4(),
+                cloud_id: Some(format!("{}:{}", r.name(), rtype)),
+                provider: CloudProvider::Aws,
+                resource_type: ResourceType::DnsRecord,
+                name: r.name().to_owned(),
+                region: "global".to_owned(),
+                status: ResourceStatus::Running,
+                metadata: serde_json::json!({
+                    "record_type": rtype,
+                    "ttl": r.ttl(),
+                    "values": values,
+                }),
+                tags: Default::default(),
+                created_at: now,
+                updated_at: now,
+            }
+        }).collect();
+        Ok(records)
+    }
+
+    async fn create_record(&self, region: &str, zone_id: &str, record: DnsRecordInput) -> Result<CloudResource> {
+        let region = self.resolve_region(region);
+        tracing::info!(provider = "aws", region = region, zone_id = zone_id, name = record.name, "Creating Route53 record via SDK");
+
+        let client = self.route53_client(region)?;
+        let rr_type = record.record_type.parse::<aws_sdk_route53::types::RrType>()
+            .map_err(|_| CloudError::BadRequest(format!("Invalid record type: {}", record.record_type)))?;
+
+        let resource_records: Vec<aws_sdk_route53::types::ResourceRecord> = record.values.iter()
+            .map(|v| aws_sdk_route53::types::ResourceRecord::builder().value(v).build().unwrap())
+            .collect();
+
+        let rrs = aws_sdk_route53::types::ResourceRecordSet::builder()
+            .name(&record.name).r#type(rr_type).ttl(record.ttl as i64)
+            .set_resource_records(Some(resource_records))
+            .build().map_err(|e| CloudError::ProviderError(format!("Route53 build record set: {}", e)))?;
+
+        let change = aws_sdk_route53::types::Change::builder()
+            .action(aws_sdk_route53::types::ChangeAction::Upsert).resource_record_set(rrs)
+            .build().map_err(|e| CloudError::ProviderError(format!("Route53 build change: {}", e)))?;
+
+        let batch = aws_sdk_route53::types::ChangeBatch::builder().changes(change)
+            .build().map_err(|e| CloudError::ProviderError(format!("Route53 build batch: {}", e)))?;
+
+        client.change_resource_record_sets().hosted_zone_id(zone_id).change_batch(batch)
+            .send().await
+            .map_err(|e| CloudError::ProviderError(format!("Route53 create_record: {}", e)))?;
+
+        let now = chrono::Utc::now();
+        Ok(CloudResource {
+            id: uuid::Uuid::new_v4(),
+            cloud_id: Some(format!("{}:{}", record.name, record.record_type)),
+            provider: CloudProvider::Aws,
+            resource_type: ResourceType::DnsRecord,
+            name: record.name,
+            region: "global".to_owned(),
+            status: ResourceStatus::Running,
+            metadata: serde_json::json!({ "record_type": record.record_type, "ttl": record.ttl, "values": record.values }),
+            tags: Default::default(),
+            created_at: now,
+            updated_at: now,
+        })
+    }
+
+    async fn delete_record(&self, region: &str, zone_id: &str, record: DnsRecordInput) -> Result<()> {
+        let region = self.resolve_region(region);
+        tracing::info!(provider = "aws", region = region, zone_id = zone_id, name = record.name, "Deleting Route53 record via SDK");
+
+        let client = self.route53_client(region)?;
+        let rr_type = record.record_type.parse::<aws_sdk_route53::types::RrType>()
+            .map_err(|_| CloudError::BadRequest(format!("Invalid record type: {}", record.record_type)))?;
+        let resource_records: Vec<aws_sdk_route53::types::ResourceRecord> = record.values.iter()
+            .map(|v| aws_sdk_route53::types::ResourceRecord::builder().value(v).build().unwrap())
+            .collect();
+        let rrs = aws_sdk_route53::types::ResourceRecordSet::builder()
+            .name(&record.name).r#type(rr_type).ttl(record.ttl as i64)
+            .set_resource_records(Some(resource_records))
+            .build().map_err(|e| CloudError::ProviderError(format!("Route53 build: {}", e)))?;
+        let change = aws_sdk_route53::types::Change::builder()
+            .action(aws_sdk_route53::types::ChangeAction::Delete).resource_record_set(rrs)
+            .build().map_err(|e| CloudError::ProviderError(format!("Route53 change: {}", e)))?;
+        let batch = aws_sdk_route53::types::ChangeBatch::builder().changes(change)
+            .build().map_err(|e| CloudError::ProviderError(format!("Route53 batch: {}", e)))?;
+        client.change_resource_record_sets().hosted_zone_id(zone_id).change_batch(batch)
+            .send().await
+            .map_err(|e| CloudError::ProviderError(format!("Route53 delete_record: {}", e)))?;
+        Ok(())
+    }
+}
+
+// ===========================================================================
+// WAF — AWS WAFv2 SDK
+// ===========================================================================
+
+#[async_trait]
+impl WafProvider for AwsSdkProvider {
+    async fn list_web_acls(&self, region: &str) -> Result<Vec<CloudResource>> {
+        let region = self.resolve_region(region);
+        tracing::info!(provider = "aws", region = region, "Listing WAFv2 web ACLs via SDK");
+
+        let client = self.wafv2_client(region)?;
+        let resp = client.list_web_acls().scope(aws_sdk_wafv2::types::Scope::Regional)
+            .send().await
+            .map_err(|e| CloudError::ProviderError(format!("WAFv2 list_web_acls: {}", e)))?;
+
+        let now = chrono::Utc::now();
+        let acls = resp.web_acls().iter().map(|acl| CloudResource {
+            id: uuid::Uuid::new_v4(),
+            cloud_id: acl.id().map(|s| s.to_owned()),
+            provider: CloudProvider::Aws,
+            resource_type: ResourceType::WafRule,
+            name: acl.name().unwrap_or_default().to_owned(),
+            region: region.to_owned(),
+            status: ResourceStatus::Running,
+            metadata: serde_json::json!({
+                "arn": acl.arn(),
+                "lock_token": acl.lock_token(),
+                "description": acl.description().unwrap_or_default(),
+            }),
+            tags: Default::default(),
+            created_at: now,
+            updated_at: now,
+        }).collect();
+        Ok(acls)
+    }
+
+    async fn get_web_acl(&self, region: &str, id: &str) -> Result<CloudResource> {
+        let region = self.resolve_region(region);
+        tracing::info!(provider = "aws", region = region, id = id, "Getting WAFv2 web ACL via SDK");
+
+        let client = self.wafv2_client(region)?;
+        let list_resp = client.list_web_acls().scope(aws_sdk_wafv2::types::Scope::Regional)
+            .send().await
+            .map_err(|e| CloudError::ProviderError(format!("WAFv2 list for get: {}", e)))?;
+
+        let summary = list_resp.web_acls().iter().find(|a| a.id().unwrap_or_default() == id)
+            .ok_or_else(|| CloudError::NotFound(format!("WAF ACL {} not found", id)))?;
+
+        let acl_name = summary.name().unwrap_or_default().to_owned();
+        let resp = client.get_web_acl()
+            .name(&acl_name)
+            .scope(aws_sdk_wafv2::types::Scope::Regional)
+            .id(id)
+            .send().await
+            .map_err(|e| CloudError::ProviderError(format!("WAFv2 get_web_acl: {}", e)))?;
+
+        let acl = resp.web_acl().ok_or_else(|| CloudError::NotFound(format!("WAF ACL {} not found", id)))?;
+        let now = chrono::Utc::now();
+        Ok(CloudResource {
+            id: uuid::Uuid::new_v4(),
+            cloud_id: Some(acl.id().to_owned()),
+            provider: CloudProvider::Aws,
+            resource_type: ResourceType::WafRule,
+            name: acl.name().to_owned(),
+            region: region.to_owned(),
+            status: ResourceStatus::Running,
+            metadata: serde_json::json!({
+                "arn": acl.arn(),
+                "capacity": acl.capacity(),
+                "default_action": format!("{:?}", acl.default_action()),
+                "rule_count": acl.rules().len(),
+            }),
+            tags: Default::default(),
+            created_at: now,
+            updated_at: now,
+        })
+    }
+
+    async fn list_rules(&self, region: &str, acl_id: &str) -> Result<Vec<CloudResource>> {
+        let region = self.resolve_region(region);
+        tracing::info!(provider = "aws", region = region, acl_id = acl_id, "Listing WAFv2 rules via SDK");
+
+        let client = self.wafv2_client(region)?;
+        let list_resp = client.list_web_acls().scope(aws_sdk_wafv2::types::Scope::Regional)
+            .send().await
+            .map_err(|e| CloudError::ProviderError(format!("WAFv2 list for rules: {}", e)))?;
+
+        let summary = list_resp.web_acls().iter().find(|a| a.id().unwrap_or_default() == acl_id)
+            .ok_or_else(|| CloudError::NotFound(format!("WAF ACL {} not found", acl_id)))?;
+
+        let acl_name = summary.name().unwrap_or_default().to_owned();
+        let resp = client.get_web_acl()
+            .name(&acl_name)
+            .scope(aws_sdk_wafv2::types::Scope::Regional)
+            .id(acl_id)
+            .send().await
+            .map_err(|e| CloudError::ProviderError(format!("WAFv2 get for rules: {}", e)))?;
+
+        let acl = resp.web_acl().ok_or_else(|| CloudError::NotFound(format!("WAF ACL {} not found", acl_id)))?;
+        let now = chrono::Utc::now();
+        let rules = acl.rules().iter().map(|r| CloudResource {
+            id: uuid::Uuid::new_v4(),
+            cloud_id: Some(r.name().to_owned()),
+            provider: CloudProvider::Aws,
+            resource_type: ResourceType::WafRule,
+            name: r.name().to_owned(),
+            region: region.to_owned(),
+            status: ResourceStatus::Running,
+            metadata: serde_json::json!({ "priority": r.priority(), "action": format!("{:?}", r.action()) }),
+            tags: Default::default(),
+            created_at: now,
+            updated_at: now,
+        }).collect();
+        Ok(rules)
+    }
+
+    async fn create_web_acl(&self, region: &str, name: &str) -> Result<CloudResource> {
+        let region = self.resolve_region(region);
+        tracing::info!(provider = "aws", region = region, name = name, "Creating WAFv2 web ACL via SDK");
+
+        let client = self.wafv2_client(region)?;
+        let default_action = aws_sdk_wafv2::types::DefaultAction::builder()
+            .allow(aws_sdk_wafv2::types::AllowAction::builder().build())
+            .build();
+        let vis_cfg = aws_sdk_wafv2::types::VisibilityConfig::builder()
+            .sampled_requests_enabled(true).cloud_watch_metrics_enabled(true).metric_name(name)
+            .build().map_err(|e| CloudError::ProviderError(format!("WAFv2 vis config: {}", e)))?;
+
+        let resp = client.create_web_acl().name(name)
+            .scope(aws_sdk_wafv2::types::Scope::Regional)
+            .default_action(default_action).visibility_config(vis_cfg)
+            .send().await
+            .map_err(|e| CloudError::ProviderError(format!("WAFv2 create_web_acl: {}", e)))?;
+
+        let summary = resp.summary().ok_or_else(|| CloudError::ProviderError("No summary in response".into()))?;
+        let now = chrono::Utc::now();
+        Ok(CloudResource {
+            id: uuid::Uuid::new_v4(),
+            cloud_id: Some(summary.id().unwrap_or_default().to_owned()),
+            provider: CloudProvider::Aws,
+            resource_type: ResourceType::WafRule,
+            name: summary.name().unwrap_or_default().to_owned(),
+            region: region.to_owned(),
+            status: ResourceStatus::Running,
+            metadata: serde_json::json!({ "arn": summary.arn(), "lock_token": summary.lock_token() }),
+            tags: Default::default(),
+            created_at: now,
+            updated_at: now,
+        })
+    }
+
+    async fn delete_web_acl(&self, region: &str, id: &str) -> Result<()> {
+        let region = self.resolve_region(region);
+        tracing::info!(provider = "aws", region = region, id = id, "Deleting WAFv2 web ACL via SDK");
+
+        let client = self.wafv2_client(region)?;
+        let list_resp = client.list_web_acls().scope(aws_sdk_wafv2::types::Scope::Regional)
+            .send().await
+            .map_err(|e| CloudError::ProviderError(format!("WAFv2 list for delete: {}", e)))?;
+
+        let summary = list_resp.web_acls().iter().find(|a| a.id().unwrap_or_default() == id)
+            .ok_or_else(|| CloudError::NotFound(format!("WAF ACL {} not found", id)))?;
+
+        let acl_name = summary.name().unwrap_or_default().to_owned();
+        let lock = summary.lock_token().unwrap_or_default().to_owned();
+        client.delete_web_acl()
+            .name(&acl_name)
+            .scope(aws_sdk_wafv2::types::Scope::Regional)
+            .id(id)
+            .lock_token(&lock)
+            .send().await
+            .map_err(|e| CloudError::ProviderError(format!("WAFv2 delete_web_acl: {}", e)))?;
+        Ok(())
+    }
+}
+
+// ===========================================================================
+// Messaging — AWS SQS + SNS SDK
+// ===========================================================================
+
+#[async_trait]
+impl MessagingProvider for AwsSdkProvider {
+    async fn list_queues(&self, region: &str) -> Result<Vec<CloudResource>> {
+        let region = self.resolve_region(region);
+        tracing::info!(provider = "aws", region = region, "Listing SQS queues via SDK");
+
+        let client = self.sqs_client(region)?;
+        let resp = client.list_queues().send().await
+            .map_err(|e| CloudError::ProviderError(format!("SQS list_queues: {}", e)))?;
+
+        let now = chrono::Utc::now();
+        let queues = resp.queue_urls().iter().map(|url| {
+            let name = url.rsplit('/').next().unwrap_or(url).to_owned();
+            CloudResource {
+                id: uuid::Uuid::new_v4(),
+                cloud_id: Some(url.clone()),
+                provider: CloudProvider::Aws,
+                resource_type: ResourceType::Queue,
+                name,
+                region: region.to_owned(),
+                status: ResourceStatus::Running,
+                metadata: serde_json::json!({ "queue_url": url }),
+                tags: Default::default(),
+                created_at: now,
+                updated_at: now,
+            }
+        }).collect();
+        Ok(queues)
+    }
+
+    async fn get_queue(&self, region: &str, id: &str) -> Result<CloudResource> {
+        let region = self.resolve_region(region);
+        tracing::info!(provider = "aws", region = region, id = id, "Getting SQS queue attributes via SDK");
+
+        let client = self.sqs_client(region)?;
+        let resp = client.get_queue_attributes().queue_url(id)
+            .attribute_names(aws_sdk_sqs::types::QueueAttributeName::All)
+            .send().await
+            .map_err(|e| CloudError::ProviderError(format!("SQS get_queue_attributes: {}", e)))?;
+
+        let empty_map = std::collections::HashMap::new();
+        let attrs = resp.attributes().unwrap_or(&empty_map);
+        let msg_count = attrs.get(&aws_sdk_sqs::types::QueueAttributeName::ApproximateNumberOfMessages)
+            .cloned().unwrap_or_default();
+        let vis_timeout = attrs.get(&aws_sdk_sqs::types::QueueAttributeName::VisibilityTimeout)
+            .cloned().unwrap_or_default();
+        let name = id.rsplit('/').next().unwrap_or(id).to_owned();
+        let now = chrono::Utc::now();
+        Ok(CloudResource {
+            id: uuid::Uuid::new_v4(),
+            cloud_id: Some(id.to_owned()),
+            provider: CloudProvider::Aws,
+            resource_type: ResourceType::Queue,
+            name,
+            region: region.to_owned(),
+            status: ResourceStatus::Running,
+            metadata: serde_json::json!({
+                "queue_url": id,
+                "approximate_message_count": msg_count,
+                "visibility_timeout": vis_timeout,
+            }),
+            tags: Default::default(),
+            created_at: now,
+            updated_at: now,
+        })
+    }
+
+    async fn create_queue(&self, region: &str, name: &str, fifo: bool) -> Result<CloudResource> {
+        let region = self.resolve_region(region);
+        tracing::info!(provider = "aws", region = region, name = name, fifo = fifo, "Creating SQS queue via SDK");
+
+        let client = self.sqs_client(region)?;
+        let queue_name = if fifo && !name.ends_with(".fifo") { format!("{}.fifo", name) } else { name.to_owned() };
+        let mut req = client.create_queue().queue_name(&queue_name);
+        if fifo {
+            req = req.attributes(aws_sdk_sqs::types::QueueAttributeName::FifoQueue, "true");
+        }
+        let resp = req.send().await
+            .map_err(|e| CloudError::ProviderError(format!("SQS create_queue: {}", e)))?;
+        let url = resp.queue_url().unwrap_or_default().to_owned();
+        let now = chrono::Utc::now();
+        Ok(CloudResource {
+            id: uuid::Uuid::new_v4(),
+            cloud_id: Some(url.clone()),
+            provider: CloudProvider::Aws,
+            resource_type: ResourceType::Queue,
+            name: queue_name,
+            region: region.to_owned(),
+            status: ResourceStatus::Running,
+            metadata: serde_json::json!({ "queue_url": url, "fifo": fifo }),
+            tags: Default::default(),
+            created_at: now,
+            updated_at: now,
+        })
+    }
+
+    async fn delete_queue(&self, region: &str, id: &str) -> Result<()> {
+        let region = self.resolve_region(region);
+        let client = self.sqs_client(region)?;
+        client.delete_queue().queue_url(id).send().await
+            .map_err(|e| CloudError::ProviderError(format!("SQS delete_queue: {}", e)))?;
+        Ok(())
+    }
+
+    async fn list_topics(&self, region: &str) -> Result<Vec<CloudResource>> {
+        let region = self.resolve_region(region);
+        tracing::info!(provider = "aws", region = region, "Listing SNS topics via SDK");
+
+        let client = self.sns_client(region)?;
+        let resp = client.list_topics().send().await
+            .map_err(|e| CloudError::ProviderError(format!("SNS list_topics: {}", e)))?;
+
+        let now = chrono::Utc::now();
+        let topics = resp.topics().iter().filter_map(|t| {
+            t.topic_arn().map(|arn| {
+                let name = arn.rsplit(':').next().unwrap_or(arn).to_owned();
+                CloudResource {
+                    id: uuid::Uuid::new_v4(),
+                    cloud_id: Some(arn.to_owned()),
+                    provider: CloudProvider::Aws,
+                    resource_type: ResourceType::Topic,
+                    name,
+                    region: region.to_owned(),
+                    status: ResourceStatus::Running,
+                    metadata: serde_json::json!({ "topic_arn": arn }),
+                    tags: Default::default(),
+                    created_at: now,
+                    updated_at: now,
+                }
+            })
+        }).collect();
+        Ok(topics)
+    }
+
+    async fn create_topic(&self, region: &str, name: &str) -> Result<CloudResource> {
+        let region = self.resolve_region(region);
+        let client = self.sns_client(region)?;
+        let resp = client.create_topic().name(name).send().await
+            .map_err(|e| CloudError::ProviderError(format!("SNS create_topic: {}", e)))?;
+        let arn = resp.topic_arn().unwrap_or_default().to_owned();
+        let now = chrono::Utc::now();
+        Ok(CloudResource {
+            id: uuid::Uuid::new_v4(),
+            cloud_id: Some(arn.clone()),
+            provider: CloudProvider::Aws,
+            resource_type: ResourceType::Topic,
+            name: name.to_owned(),
+            region: region.to_owned(),
+            status: ResourceStatus::Running,
+            metadata: serde_json::json!({ "topic_arn": arn }),
+            tags: Default::default(),
+            created_at: now,
+            updated_at: now,
+        })
+    }
+
+    async fn delete_topic(&self, region: &str, id: &str) -> Result<()> {
+        let region = self.resolve_region(region);
+        let client = self.sns_client(region)?;
+        client.delete_topic().topic_arn(id).send().await
+            .map_err(|e| CloudError::ProviderError(format!("SNS delete_topic: {}", e)))?;
+        Ok(())
+    }
+}
+
+// ===========================================================================
+// KMS — AWS Key Management Service SDK
+// ===========================================================================
+
+#[async_trait]
+impl KmsProvider for AwsSdkProvider {
+    async fn list_keys(&self, region: &str) -> Result<Vec<CloudResource>> {
+        let region = self.resolve_region(region);
+        tracing::info!(provider = "aws", region = region, "Listing KMS keys via SDK");
+
+        let client = self.kms_real_client(region)?;
+        let resp = client.list_keys().send().await
+            .map_err(|e| CloudError::ProviderError(format!("KMS list_keys: {}", e)))?;
+
+        let now = chrono::Utc::now();
+        let mut keys = Vec::new();
+        for entry in resp.keys() {
+            let key_id = entry.key_id().unwrap_or_default().to_owned();
+            if let Ok(desc) = client.describe_key().key_id(&key_id).send().await {
+                if let Some(meta) = desc.key_metadata() {
+                    let status = match meta.key_state() {
+                        Some(s) if s.as_str() == "Enabled" => ResourceStatus::Running,
+                        Some(s) if s.as_str() == "Disabled" => ResourceStatus::Stopped,
+                        Some(s) if s.as_str() == "PendingDeletion" => ResourceStatus::Deleting,
+                        _ => ResourceStatus::Pending,
+                    };
+                    keys.push(CloudResource {
+                        id: uuid::Uuid::new_v4(),
+                        cloud_id: Some(key_id.clone()),
+                        provider: CloudProvider::Aws,
+                        resource_type: ResourceType::KmsKey,
+                        name: meta.description().unwrap_or(key_id.as_str()).to_owned(),
+                        region: region.to_owned(),
+                        status,
+                        metadata: serde_json::json!({
+                            "arn": meta.arn().unwrap_or_default(),
+                            "key_usage": meta.key_usage().map(|u| u.as_str()).unwrap_or_default(),
+                            "key_spec": meta.key_spec().map(|s| s.as_str()).unwrap_or_default(),
+                            "key_manager": meta.key_manager().map(|m| m.as_str()).unwrap_or_default(),
+                        }),
+                        tags: Default::default(),
+                        created_at: now,
+                        updated_at: now,
+                    });
+                }
+            }
+        }
+        Ok(keys)
+    }
+
+    async fn get_key(&self, region: &str, id: &str) -> Result<CloudResource> {
+        let region = self.resolve_region(region);
+        tracing::info!(provider = "aws", region = region, id = id, "Getting KMS key via SDK");
+
+        let client = self.kms_real_client(region)?;
+        let resp = client.describe_key().key_id(id).send().await
+            .map_err(|e| CloudError::ProviderError(format!("KMS describe_key: {}", e)))?;
+
+        let meta = resp.key_metadata().ok_or_else(|| CloudError::NotFound(format!("KMS key {} not found", id)))?;
+        let now = chrono::Utc::now();
+        let status = match meta.key_state() {
+            Some(s) if s.as_str() == "Enabled" => ResourceStatus::Running,
+            Some(s) if s.as_str() == "Disabled" => ResourceStatus::Stopped,
+            Some(s) if s.as_str() == "PendingDeletion" => ResourceStatus::Deleting,
+            _ => ResourceStatus::Pending,
+        };
+        Ok(CloudResource {
+            id: uuid::Uuid::new_v4(),
+            cloud_id: Some(meta.key_id().to_owned()),
+            provider: CloudProvider::Aws,
+            resource_type: ResourceType::KmsKey,
+            name: meta.description().unwrap_or(meta.key_id()).to_owned(),
+            region: region.to_owned(),
+            status,
+            metadata: serde_json::json!({
+                "arn": meta.arn().unwrap_or_default(),
+                "key_usage": meta.key_usage().map(|u| u.as_str()).unwrap_or_default(),
+                "key_spec": meta.key_spec().map(|s| s.as_str()).unwrap_or_default(),
+                "key_manager": meta.key_manager().map(|m| m.as_str()).unwrap_or_default(),
+                "enabled": meta.enabled(),
+            }),
+            tags: Default::default(),
+            created_at: now,
+            updated_at: now,
+        })
+    }
+
+    async fn create_key(&self, region: &str, name: &str, key_type: &str) -> Result<CloudResource> {
+        let region = self.resolve_region(region);
+        tracing::info!(provider = "aws", region = region, name = name, key_type = key_type, "Creating KMS key via SDK");
+
+        let client = self.kms_real_client(region)?;
+        let key_spec = match key_type {
+            "rsa" | "RSA" | "rsa-2048" => aws_sdk_kms::types::KeySpec::Rsa2048,
+            "rsa-4096" => aws_sdk_kms::types::KeySpec::Rsa4096,
+            "ecc" | "ecc-nist-p256" => aws_sdk_kms::types::KeySpec::EccNistP256,
+            _ => aws_sdk_kms::types::KeySpec::SymmetricDefault,
+        };
+        let key_usage = if matches!(key_spec, aws_sdk_kms::types::KeySpec::SymmetricDefault) {
+            aws_sdk_kms::types::KeyUsageType::EncryptDecrypt
+        } else {
+            aws_sdk_kms::types::KeyUsageType::SignVerify
+        };
+        let resp = client.create_key().description(name).key_spec(key_spec).key_usage(key_usage)
+            .send().await
+            .map_err(|e| CloudError::ProviderError(format!("KMS create_key: {}", e)))?;
+        let meta = resp.key_metadata().ok_or_else(|| CloudError::ProviderError("No key metadata".into()))?;
+        let now = chrono::Utc::now();
+        Ok(CloudResource {
+            id: uuid::Uuid::new_v4(),
+            cloud_id: Some(meta.key_id().to_owned()),
+            provider: CloudProvider::Aws,
+            resource_type: ResourceType::KmsKey,
+            name: name.to_owned(),
+            region: region.to_owned(),
+            status: ResourceStatus::Running,
+            metadata: serde_json::json!({ "arn": meta.arn().unwrap_or_default(), "key_spec": key_type }),
+            tags: Default::default(),
+            created_at: now,
+            updated_at: now,
+        })
+    }
+
+    async fn schedule_key_deletion(&self, region: &str, id: &str) -> Result<()> {
+        let region = self.resolve_region(region);
+        let client = self.kms_real_client(region)?;
+        client.schedule_key_deletion().key_id(id).pending_window_in_days(7).send().await
+            .map_err(|e| CloudError::ProviderError(format!("KMS schedule_key_deletion: {}", e)))?;
+        Ok(())
+    }
+
+    async fn set_key_enabled(&self, region: &str, id: &str, enabled: bool) -> Result<()> {
+        let region = self.resolve_region(region);
+        let client = self.kms_real_client(region)?;
+        if enabled {
+            client.enable_key().key_id(id).send().await
+                .map_err(|e| CloudError::ProviderError(format!("KMS enable_key: {}", e)))?;
+        } else {
+            client.disable_key().key_id(id).send().await
+                .map_err(|e| CloudError::ProviderError(format!("KMS disable_key: {}", e)))?;
+        }
+        Ok(())
+    }
+}
+
+// ===========================================================================
+// Auto Scaling — AWS Auto Scaling SDK
+// ===========================================================================
+
+#[async_trait]
+impl AutoScalingProvider for AwsSdkProvider {
+    async fn list_groups(&self, region: &str) -> Result<Vec<CloudResource>> {
+        let region = self.resolve_region(region);
+        tracing::info!(provider = "aws", region = region, "Listing Auto Scaling groups via SDK");
+
+        let client = self.autoscaling_client(region)?;
+        let resp = client.describe_auto_scaling_groups().send().await
+            .map_err(|e| CloudError::ProviderError(format!("AutoScaling list: {}", e)))?;
+
+        let now = chrono::Utc::now();
+        let groups = resp.auto_scaling_groups().iter().map(|g| {
+            let status = if g.instances().is_empty() { ResourceStatus::Stopped } else { ResourceStatus::Running };
+            let mut tags: std::collections::HashMap<String, String> = Default::default();
+            for t in g.tags() {
+                if let (Some(k), Some(v)) = (t.key(), t.value()) {
+                    tags.insert(k.to_owned(), v.to_owned());
+                }
+            }
+            CloudResource {
+                id: uuid::Uuid::new_v4(),
+                cloud_id: Some(g.auto_scaling_group_name().unwrap_or_default().to_owned()),
+                provider: CloudProvider::Aws,
+                resource_type: ResourceType::AutoScalingGroup,
+                name: g.auto_scaling_group_name().unwrap_or_default().to_owned(),
+                region: region.to_owned(),
+                status,
+                metadata: serde_json::json!({
+                    "arn": g.auto_scaling_group_arn().unwrap_or_default(),
+                    "min_size": g.min_size(),
+                    "max_size": g.max_size(),
+                    "desired_capacity": g.desired_capacity(),
+                    "instance_count": g.instances().len(),
+                    "launch_configuration": g.launch_configuration_name().unwrap_or_default(),
+                    "availability_zones": g.availability_zones(),
+                }),
+                tags,
+                created_at: now,
+                updated_at: now,
+            }
+        }).collect();
+        Ok(groups)
+    }
+
+    async fn get_group(&self, region: &str, id: &str) -> Result<CloudResource> {
+        let region = self.resolve_region(region);
+        let client = self.autoscaling_client(region)?;
+        let resp = client.describe_auto_scaling_groups().auto_scaling_group_names(id)
+            .send().await
+            .map_err(|e| CloudError::ProviderError(format!("AutoScaling get: {}", e)))?;
+        let g = resp.auto_scaling_groups().first()
+            .ok_or_else(|| CloudError::NotFound(format!("ASG {} not found", id)))?;
+        let now = chrono::Utc::now();
+        Ok(CloudResource {
+            id: uuid::Uuid::new_v4(),
+            cloud_id: Some(g.auto_scaling_group_name().unwrap_or_default().to_owned()),
+            provider: CloudProvider::Aws,
+            resource_type: ResourceType::AutoScalingGroup,
+            name: g.auto_scaling_group_name().unwrap_or_default().to_owned(),
+            region: region.to_owned(),
+            status: ResourceStatus::Running,
+            metadata: serde_json::json!({
+                "arn": g.auto_scaling_group_arn().unwrap_or_default(),
+                "min_size": g.min_size(), "max_size": g.max_size(),
+                "desired_capacity": g.desired_capacity(),
+                "instance_count": g.instances().len(),
+            }),
+            tags: Default::default(),
+            created_at: now,
+            updated_at: now,
+        })
+    }
+
+    async fn create_group(&self, region: &str, name: &str, min_size: u32, max_size: u32, desired: u32) -> Result<CloudResource> {
+        let region = self.resolve_region(region);
+        let client = self.autoscaling_client(region)?;
+        let az = format!("{}a", region);
+        client.create_auto_scaling_group()
+            .auto_scaling_group_name(name)
+            .min_size(min_size as i32).max_size(max_size as i32).desired_capacity(desired as i32)
+            .availability_zones(&az).launch_configuration_name("placeholder-lc")
+            .send().await
+            .map_err(|e| CloudError::ProviderError(format!("AutoScaling create: {}", e)))?;
+        let now = chrono::Utc::now();
+        Ok(CloudResource {
+            id: uuid::Uuid::new_v4(),
+            cloud_id: Some(name.to_owned()),
+            provider: CloudProvider::Aws,
+            resource_type: ResourceType::AutoScalingGroup,
+            name: name.to_owned(),
+            region: region.to_owned(),
+            status: ResourceStatus::Creating,
+            metadata: serde_json::json!({ "min_size": min_size, "max_size": max_size, "desired_capacity": desired }),
+            tags: Default::default(),
+            created_at: now,
+            updated_at: now,
+        })
+    }
+
+    async fn delete_group(&self, region: &str, id: &str) -> Result<()> {
+        let region = self.resolve_region(region);
+        let client = self.autoscaling_client(region)?;
+        client.delete_auto_scaling_group().auto_scaling_group_name(id).force_delete(true)
+            .send().await
+            .map_err(|e| CloudError::ProviderError(format!("AutoScaling delete: {}", e)))?;
+        Ok(())
+    }
+
+    async fn set_desired_capacity(&self, region: &str, id: &str, desired: u32) -> Result<()> {
+        let region = self.resolve_region(region);
+        let client = self.autoscaling_client(region)?;
+        client.set_desired_capacity().auto_scaling_group_name(id).desired_capacity(desired as i32)
+            .send().await
+            .map_err(|e| CloudError::ProviderError(format!("AutoScaling set_desired: {}", e)))?;
+        Ok(())
+    }
+}
+
+// ===========================================================================
+// Volume — AWS EC2 EBS SDK
+// ===========================================================================
+
+#[async_trait]
+impl VolumeProvider for AwsSdkProvider {
+    async fn list_volumes(&self, region: &str) -> Result<Vec<CloudResource>> {
+        let region = self.resolve_region(region);
+        tracing::info!(provider = "aws", region = region, "Listing EBS volumes via SDK");
+
+        let client = self.ec2_client(region)?;
+        let resp = client.describe_volumes().send().await
+            .map_err(|e| CloudError::ProviderError(format!("EC2 describe_volumes: {}", e)))?;
+
+        let now = chrono::Utc::now();
+        let volumes = resp.volumes().iter().map(|v| {
+            let status = match v.state() {
+                Some(s) if s.as_str() == "available" => ResourceStatus::Available,
+                Some(s) if s.as_str() == "in-use" => ResourceStatus::Running,
+                Some(s) if s.as_str() == "creating" => ResourceStatus::Creating,
+                Some(s) if s.as_str() == "deleting" => ResourceStatus::Deleting,
+                _ => ResourceStatus::Pending,
+            };
+            let mut tags: std::collections::HashMap<String, String> = Default::default();
+            for t in v.tags() {
+                if let (Some(k), Some(v)) = (t.key(), t.value()) { tags.insert(k.to_owned(), v.to_owned()); }
+            }
+            let name = tags.get("Name").cloned().unwrap_or_else(|| v.volume_id().unwrap_or_default().to_owned());
+            CloudResource {
+                id: uuid::Uuid::new_v4(),
+                cloud_id: v.volume_id().map(|s| s.to_owned()),
+                provider: CloudProvider::Aws,
+                resource_type: ResourceType::Volume,
+                name,
+                region: region.to_owned(),
+                status,
+                metadata: serde_json::json!({
+                    "size_gb": v.size(),
+                    "volume_type": v.volume_type().map(|t| t.as_str()).unwrap_or_default(),
+                    "iops": v.iops(),
+                    "encrypted": v.encrypted(),
+                    "availability_zone": v.availability_zone().unwrap_or_default(),
+                    "attachments": v.attachments().iter().map(|a| serde_json::json!({
+                        "instance_id": a.instance_id().unwrap_or_default(),
+                        "device": a.device().unwrap_or_default(),
+                        "state": a.state().map(|s| s.as_str()).unwrap_or_default(),
+                    })).collect::<Vec<_>>(),
+                }),
+                tags,
+                created_at: now,
+                updated_at: now,
+            }
+        }).collect();
+        Ok(volumes)
+    }
+
+    async fn create_volume(&self, region: &str, size_gb: i32, volume_type: &str, az: &str) -> Result<CloudResource> {
+        let region = self.resolve_region(region);
+        let client = self.ec2_client(region)?;
+        let vtype = match volume_type {
+            "gp3" => aws_sdk_ec2::types::VolumeType::Gp3,
+            "gp2" => aws_sdk_ec2::types::VolumeType::Gp2,
+            "io1" => aws_sdk_ec2::types::VolumeType::Io1,
+            "io2" => aws_sdk_ec2::types::VolumeType::Io2,
+            "st1" => aws_sdk_ec2::types::VolumeType::St1,
+            "sc1" => aws_sdk_ec2::types::VolumeType::Sc1,
+            _ => aws_sdk_ec2::types::VolumeType::Gp3,
+        };
+        let resp = client.create_volume().availability_zone(az).size(size_gb).volume_type(vtype)
+            .send().await
+            .map_err(|e| CloudError::ProviderError(format!("EC2 create_volume: {}", e)))?;
+        let now = chrono::Utc::now();
+        Ok(CloudResource {
+            id: uuid::Uuid::new_v4(),
+            cloud_id: resp.volume_id().map(|s| s.to_owned()),
+            provider: CloudProvider::Aws,
+            resource_type: ResourceType::Volume,
+            name: resp.volume_id().unwrap_or_default().to_owned(),
+            region: region.to_owned(),
+            status: ResourceStatus::Creating,
+            metadata: serde_json::json!({ "size_gb": size_gb, "volume_type": volume_type, "availability_zone": az }),
+            tags: Default::default(),
+            created_at: now,
+            updated_at: now,
+        })
+    }
+
+    async fn attach_volume(&self, region: &str, volume_id: &str, instance_id: &str, device: &str) -> Result<()> {
+        let region = self.resolve_region(region);
+        let client = self.ec2_client(region)?;
+        client.attach_volume().volume_id(volume_id).instance_id(instance_id).device(device)
+            .send().await
+            .map_err(|e| CloudError::ProviderError(format!("EC2 attach_volume: {}", e)))?;
+        Ok(())
+    }
+
+    async fn detach_volume(&self, region: &str, volume_id: &str) -> Result<()> {
+        let region = self.resolve_region(region);
+        let client = self.ec2_client(region)?;
+        client.detach_volume().volume_id(volume_id).send().await
+            .map_err(|e| CloudError::ProviderError(format!("EC2 detach_volume: {}", e)))?;
+        Ok(())
+    }
+
+    async fn delete_volume(&self, region: &str, id: &str) -> Result<()> {
+        let region = self.resolve_region(region);
+        let client = self.ec2_client(region)?;
+        client.delete_volume().volume_id(id).send().await
+            .map_err(|e| CloudError::ProviderError(format!("EC2 delete_volume: {}", e)))?;
+        Ok(())
+    }
+
+    async fn create_volume_snapshot(&self, region: &str, volume_id: &str, name: &str) -> Result<CloudResource> {
+        let region = self.resolve_region(region);
+        let client = self.ec2_client(region)?;
+        let resp = client.create_snapshot().volume_id(volume_id).description(name)
+            .send().await
+            .map_err(|e| CloudError::ProviderError(format!("EC2 create_snapshot: {}", e)))?;
+        let now = chrono::Utc::now();
+        Ok(CloudResource {
+            id: uuid::Uuid::new_v4(),
+            cloud_id: resp.snapshot_id().map(|s| s.to_owned()),
+            provider: CloudProvider::Aws,
+            resource_type: ResourceType::Snapshot,
+            name: name.to_owned(),
+            region: region.to_owned(),
+            status: ResourceStatus::Creating,
+            metadata: serde_json::json!({ "volume_id": volume_id, "volume_size": resp.volume_size(), "encrypted": resp.encrypted() }),
+            tags: Default::default(),
+            created_at: now,
+            updated_at: now,
+        })
+    }
+}
+
+// ===========================================================================
+// ML — AWS SageMaker SDK
+// ===========================================================================
+
+#[async_trait]
+impl MlProvider for AwsSdkProvider {
+    async fn list_models(&self, region: &str) -> Result<Vec<CloudResource>> {
+        let region = self.resolve_region(region);
+        tracing::info!(provider = "aws", region = region, "Listing SageMaker models via SDK");
+
+        let client = self.sagemaker_client(region)?;
+        let resp = client.list_models().send().await
+            .map_err(|e| CloudError::ProviderError(format!("SageMaker list_models: {}", e)))?;
+
+        let now = chrono::Utc::now();
+        let models = resp.models().iter().map(|m| CloudResource {
+            id: uuid::Uuid::new_v4(),
+            cloud_id: Some(m.model_arn().unwrap_or_default().to_owned()),
+            provider: CloudProvider::Aws,
+            resource_type: ResourceType::MlModel,
+            name: m.model_name().unwrap_or_default().to_owned(),
+            region: region.to_owned(),
+            status: ResourceStatus::Running,
+            metadata: serde_json::json!({ "arn": m.model_arn() }),
+            tags: Default::default(),
+            created_at: now,
+            updated_at: now,
+        }).collect();
+        Ok(models)
+    }
+
+    async fn list_endpoints(&self, region: &str) -> Result<Vec<CloudResource>> {
+        let region = self.resolve_region(region);
+        let client = self.sagemaker_client(region)?;
+        let resp = client.list_endpoints().send().await
+            .map_err(|e| CloudError::ProviderError(format!("SageMaker list_endpoints: {}", e)))?;
+
+        let now = chrono::Utc::now();
+        let endpoints = resp.endpoints().iter().map(|ep| {
+            let ep_status_str = ep.endpoint_status().map(|s| s.as_str()).unwrap_or("Unknown");
+            let status = match ep_status_str {
+                "InService" => ResourceStatus::Running,
+                "Creating" => ResourceStatus::Creating,
+                "Updating" => ResourceStatus::Updating,
+                "Deleting" => ResourceStatus::Deleting,
+                "Failed" => ResourceStatus::Error,
+                _ => ResourceStatus::Pending,
+            };
+            CloudResource {
+                id: uuid::Uuid::new_v4(),
+                cloud_id: Some(ep.endpoint_arn().unwrap_or_default().to_owned()),
+                provider: CloudProvider::Aws,
+                resource_type: ResourceType::MlEndpoint,
+                name: ep.endpoint_name().unwrap_or_default().to_owned(),
+                region: region.to_owned(),
+                status,
+                metadata: serde_json::json!({ "arn": ep.endpoint_arn(), "endpoint_status": ep.endpoint_status().map(|s| s.as_str()).unwrap_or("Unknown") }),
+                tags: Default::default(),
+                created_at: now,
+                updated_at: now,
+            }
+        }).collect();
+        Ok(endpoints)
+    }
+
+    async fn list_training_jobs(&self, region: &str) -> Result<Vec<CloudResource>> {
+        let region = self.resolve_region(region);
+        let client = self.sagemaker_client(region)?;
+        let resp = client.list_training_jobs().send().await
+            .map_err(|e| CloudError::ProviderError(format!("SageMaker list_training_jobs: {}", e)))?;
+
+        let now = chrono::Utc::now();
+        let jobs = resp.training_job_summaries().iter().map(|j| {
+            let j_status_str = j.training_job_status().map(|s| s.as_str()).unwrap_or("Unknown");
+            let status = match j_status_str {
+                "Completed" => ResourceStatus::Running,
+                "InProgress" => ResourceStatus::Creating,
+                "Stopping" | "Stopped" => ResourceStatus::Stopped,
+                "Failed" => ResourceStatus::Error,
+                _ => ResourceStatus::Pending,
+            };
+            CloudResource {
+                id: uuid::Uuid::new_v4(),
+                cloud_id: Some(j.training_job_arn().unwrap_or_default().to_owned()),
+                provider: CloudProvider::Aws,
+                resource_type: ResourceType::MlTrainingJob,
+                name: j.training_job_name().unwrap_or_default().to_owned(),
+                region: region.to_owned(),
+                status,
+                metadata: serde_json::json!({ "arn": j.training_job_arn(), "status": j.training_job_status().map(|s| s.as_str()).unwrap_or("Unknown") }),
+                tags: Default::default(),
+                created_at: now,
+                updated_at: now,
+            }
+        }).collect();
+        Ok(jobs)
+    }
+
+    async fn create_endpoint(&self, region: &str, name: &str, model_name: &str) -> Result<CloudResource> {
+        let region = self.resolve_region(region);
+        tracing::info!(provider = "aws", region = region, name = name, model_name = model_name, "Creating SageMaker endpoint via SDK");
+
+        let client = self.sagemaker_client(region)?;
+        let config_name = format!("{}-config", name);
+        let variant = aws_sdk_sagemaker::types::ProductionVariant::builder()
+            .variant_name("AllTraffic").model_name(model_name)
+            .initial_instance_count(1)
+            .instance_type(aws_sdk_sagemaker::types::ProductionVariantInstanceType::MlM5Large)
+            .build();
+
+        client.create_endpoint_config().endpoint_config_name(&config_name)
+            .production_variants(variant).send().await
+            .map_err(|e| CloudError::ProviderError(format!("SageMaker create_endpoint_config: {}", e)))?;
+
+        let resp = client.create_endpoint().endpoint_name(name).endpoint_config_name(&config_name)
+            .send().await
+            .map_err(|e| CloudError::ProviderError(format!("SageMaker create_endpoint: {}", e)))?;
+
+        let now = chrono::Utc::now();
+        Ok(CloudResource {
+            id: uuid::Uuid::new_v4(),
+            cloud_id: resp.endpoint_arn().map(|s| s.to_owned()),
+            provider: CloudProvider::Aws,
+            resource_type: ResourceType::MlEndpoint,
+            name: name.to_owned(),
+            region: region.to_owned(),
+            status: ResourceStatus::Creating,
+            metadata: serde_json::json!({ "model_name": model_name, "endpoint_config": config_name }),
+            tags: Default::default(),
+            created_at: now,
+            updated_at: now,
+        })
+    }
+
+    async fn delete_endpoint(&self, region: &str, name: &str) -> Result<()> {
+        let region = self.resolve_region(region);
+        let client = self.sagemaker_client(region)?;
+        client.delete_endpoint().endpoint_name(name).send().await
+            .map_err(|e| CloudError::ProviderError(format!("SageMaker delete_endpoint: {}", e)))?;
+        Ok(())
+    }
+}
+
+// ===========================================================================
+// IoT — AWS IoT SDK
+// ===========================================================================
+
+#[async_trait]
+impl IoTProvider for AwsSdkProvider {
+    async fn list_things(&self, region: &str) -> Result<Vec<CloudResource>> {
+        let region = self.resolve_region(region);
+        tracing::info!(provider = "aws", region = region, "Listing IoT things via SDK");
+
+        let client = self.iot_client(region)?;
+        let resp = client.list_things().send().await
+            .map_err(|e| CloudError::ProviderError(format!("IoT list_things: {}", e)))?;
+
+        let now = chrono::Utc::now();
+        let things = resp.things().iter().map(|t| {
+            let attrs: serde_json::Value = t.attributes()
+                .map(|a| serde_json::json!(a))
+                .unwrap_or(serde_json::json!({}));
+            CloudResource {
+                id: uuid::Uuid::new_v4(),
+                cloud_id: Some(t.thing_name().unwrap_or_default().to_owned()),
+                provider: CloudProvider::Aws,
+                resource_type: ResourceType::IoTThing,
+                name: t.thing_name().unwrap_or_default().to_owned(),
+                region: region.to_owned(),
+                status: ResourceStatus::Running,
+                metadata: serde_json::json!({
+                    "thing_arn": t.thing_arn().unwrap_or_default(),
+                    "thing_type": t.thing_type_name().unwrap_or_default(),
+                    "attributes": attrs,
+                    "version": t.version(),
+                }),
+                tags: Default::default(),
+                created_at: now,
+                updated_at: now,
+            }
+        }).collect();
+        Ok(things)
+    }
+
+    async fn get_thing(&self, region: &str, name: &str) -> Result<CloudResource> {
+        let region = self.resolve_region(region);
+        let client = self.iot_client(region)?;
+        let resp = client.describe_thing().thing_name(name).send().await
+            .map_err(|e| CloudError::ProviderError(format!("IoT describe_thing: {}", e)))?;
+
+        let now = chrono::Utc::now();
+        let attrs: serde_json::Value = resp.attributes()
+            .map(|a| serde_json::json!(a))
+            .unwrap_or(serde_json::json!({}));
+        Ok(CloudResource {
+            id: uuid::Uuid::new_v4(),
+            cloud_id: Some(resp.thing_name().unwrap_or_default().to_owned()),
+            provider: CloudProvider::Aws,
+            resource_type: ResourceType::IoTThing,
+            name: resp.thing_name().unwrap_or_default().to_owned(),
+            region: region.to_owned(),
+            status: ResourceStatus::Running,
+            metadata: serde_json::json!({
+                "thing_arn": resp.thing_arn().unwrap_or_default(),
+                "thing_type": resp.thing_type_name().unwrap_or_default(),
+                "attributes": attrs,
+                "version": resp.version(),
+            }),
+            tags: Default::default(),
+            created_at: now,
+            updated_at: now,
+        })
+    }
+
+    async fn create_thing(&self, region: &str, name: &str, attributes: serde_json::Value) -> Result<CloudResource> {
+        let region = self.resolve_region(region);
+        let client = self.iot_client(region)?;
+        let mut req = client.create_thing().thing_name(name);
+        if let Some(attrs_map) = attributes.as_object() {
+            let mut attr_builder = aws_sdk_iot::types::AttributePayload::builder();
+            for (k, v) in attrs_map {
+                attr_builder = attr_builder.attributes(k.clone(), v.as_str().unwrap_or_default().to_owned());
+            }
+            req = req.attribute_payload(attr_builder.build());
+        }
+        let resp = req.send().await
+            .map_err(|e| CloudError::ProviderError(format!("IoT create_thing: {}", e)))?;
+        let now = chrono::Utc::now();
+        Ok(CloudResource {
+            id: uuid::Uuid::new_v4(),
+            cloud_id: Some(resp.thing_name().unwrap_or_default().to_owned()),
+            provider: CloudProvider::Aws,
+            resource_type: ResourceType::IoTThing,
+            name: resp.thing_name().unwrap_or_default().to_owned(),
+            region: region.to_owned(),
+            status: ResourceStatus::Running,
+            metadata: serde_json::json!({ "thing_arn": resp.thing_arn().unwrap_or_default(), "thing_id": resp.thing_id().unwrap_or_default() }),
+            tags: Default::default(),
+            created_at: now,
+            updated_at: now,
+        })
+    }
+
+    async fn delete_thing(&self, region: &str, name: &str) -> Result<()> {
+        let region = self.resolve_region(region);
+        let client = self.iot_client(region)?;
+        client.delete_thing().thing_name(name).send().await
+            .map_err(|e| CloudError::ProviderError(format!("IoT delete_thing: {}", e)))?;
+        Ok(())
+    }
+
+    async fn list_thing_groups(&self, region: &str) -> Result<Vec<CloudResource>> {
+        let region = self.resolve_region(region);
+        let client = self.iot_client(region)?;
+        let resp = client.list_thing_groups().send().await
+            .map_err(|e| CloudError::ProviderError(format!("IoT list_thing_groups: {}", e)))?;
+        let now = chrono::Utc::now();
+        let groups = resp.thing_groups().iter().map(|g| CloudResource {
+            id: uuid::Uuid::new_v4(),
+            cloud_id: Some(g.group_name().unwrap_or_default().to_owned()),
+            provider: CloudProvider::Aws,
+            resource_type: ResourceType::IoTThingGroup,
+            name: g.group_name().unwrap_or_default().to_owned(),
+            region: region.to_owned(),
+            status: ResourceStatus::Running,
+            metadata: serde_json::json!({ "group_arn": g.group_arn().unwrap_or_default() }),
+            tags: Default::default(),
+            created_at: now,
+            updated_at: now,
+        }).collect();
+        Ok(groups)
     }
 }

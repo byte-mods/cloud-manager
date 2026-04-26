@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use crate::error::CloudError;
 use crate::models::{CloudProvider, ResourceListResponse};
+use crate::providers;
 use crate::providers::ProviderContext;
 
 #[derive(Debug, Deserialize)]
@@ -57,13 +58,13 @@ fn default_region(provider: CloudProvider, query_region: Option<&str>) -> String
 pub async fn list_volumes(
     path: web::Path<ProviderPath>,
     query: web::Query<RegionQuery>,
-    _ctx: web::Data<Arc<ProviderContext>>,
+    ctx: web::Data<Arc<ProviderContext>>,
 ) -> Result<HttpResponse, CloudError> {
     let provider = parse_provider(&path.provider)?;
     let region = default_region(provider, query.region.as_deref());
-    let _ = region;
 
-    let volumes = vec![];
+    let vol = providers::get_volume_provider(provider, ctx.get_ref());
+    let volumes = vol.list_volumes(&region).await?;
     Ok(HttpResponse::Ok().json(ResourceListResponse {
         total: volumes.len(),
         resources: volumes,
@@ -75,21 +76,28 @@ pub async fn list_volumes(
 pub async fn create_volume(
     path: web::Path<ProviderPath>,
     body: web::Json<CreateVolumeRequest>,
-    _ctx: web::Data<Arc<ProviderContext>>,
+    ctx: web::Data<Arc<ProviderContext>>,
 ) -> Result<HttpResponse, CloudError> {
-    let _provider = parse_provider(&path.provider)?;
-    let _config = body.into_inner();
-    Ok(HttpResponse::Created().json(serde_json::json!({"status": "created"})))
+    let provider = parse_provider(&path.provider)?;
+    let config = body.into_inner();
+    let region = default_region(provider, None);
+
+    let vol = providers::get_volume_provider(provider, ctx.get_ref());
+    let volume = vol.create_volume(&region, config.size_gb, &config.volume_type, &config.availability_zone).await?;
+    Ok(HttpResponse::Created().json(volume))
 }
 
 /// DELETE /api/v1/cloud/{provider}/volumes/{id}
 pub async fn delete_volume(
     path: web::Path<ResourcePath>,
     query: web::Query<RegionQuery>,
-    _ctx: web::Data<Arc<ProviderContext>>,
+    ctx: web::Data<Arc<ProviderContext>>,
 ) -> Result<HttpResponse, CloudError> {
-    let _provider = parse_provider(&path.provider)?;
-    let _region = default_region(_provider, query.region.as_deref());
+    let provider = parse_provider(&path.provider)?;
+    let region = default_region(provider, query.region.as_deref());
+
+    let vol = providers::get_volume_provider(provider, ctx.get_ref());
+    vol.delete_volume(&region, &path.id).await?;
     Ok(HttpResponse::NoContent().finish())
 }
 
@@ -97,19 +105,29 @@ pub async fn delete_volume(
 pub async fn attach_volume(
     path: web::Path<ResourcePath>,
     body: web::Json<AttachVolumeRequest>,
-    _ctx: web::Data<Arc<ProviderContext>>,
+    query: web::Query<RegionQuery>,
+    ctx: web::Data<Arc<ProviderContext>>,
 ) -> Result<HttpResponse, CloudError> {
-    let _provider = parse_provider(&path.provider)?;
-    let _config = body.into_inner();
+    let provider = parse_provider(&path.provider)?;
+    let config = body.into_inner();
+    let region = default_region(provider, query.region.as_deref());
+
+    let vol = providers::get_volume_provider(provider, ctx.get_ref());
+    vol.attach_volume(&region, &path.id, &config.instance_id, &config.device).await?;
     Ok(HttpResponse::Ok().json(serde_json::json!({"status": "attached"})))
 }
 
 /// POST /api/v1/cloud/{provider}/volumes/{id}/detach
 pub async fn detach_volume(
     path: web::Path<ResourcePath>,
-    _ctx: web::Data<Arc<ProviderContext>>,
+    query: web::Query<RegionQuery>,
+    ctx: web::Data<Arc<ProviderContext>>,
 ) -> Result<HttpResponse, CloudError> {
-    let _provider = parse_provider(&path.provider)?;
+    let provider = parse_provider(&path.provider)?;
+    let region = default_region(provider, query.region.as_deref());
+
+    let vol = providers::get_volume_provider(provider, ctx.get_ref());
+    vol.detach_volume(&region, &path.id).await?;
     Ok(HttpResponse::Ok().json(serde_json::json!({"status": "detached"})))
 }
 
@@ -117,9 +135,14 @@ pub async fn detach_volume(
 pub async fn create_snapshot(
     path: web::Path<ResourcePath>,
     body: web::Json<CreateSnapshotRequest>,
-    _ctx: web::Data<Arc<ProviderContext>>,
+    query: web::Query<RegionQuery>,
+    ctx: web::Data<Arc<ProviderContext>>,
 ) -> Result<HttpResponse, CloudError> {
-    let _provider = parse_provider(&path.provider)?;
-    let _config = body.into_inner();
-    Ok(HttpResponse::Created().json(serde_json::json!({"status": "snapshot_created"})))
+    let provider = parse_provider(&path.provider)?;
+    let config = body.into_inner();
+    let region = default_region(provider, query.region.as_deref());
+
+    let vol = providers::get_volume_provider(provider, ctx.get_ref());
+    let snapshot = vol.create_volume_snapshot(&region, &path.id, &config.name).await?;
+    Ok(HttpResponse::Created().json(snapshot))
 }

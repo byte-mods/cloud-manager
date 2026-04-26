@@ -24,7 +24,7 @@ use std::sync::Arc;
 use cloud_common::{CredentialManager, FeatureFlags, RedisCache};
 
 use crate::models::CloudProvider;
-use crate::traits::{ApiGatewayProvider, CacheDbProvider, CdnProvider, ComputeProvider, ContainerRegistryProvider, DatabaseProvider, IoTProvider, KubernetesProvider, MlProvider, NetworkingProvider, NoSqlProvider, ServerlessProvider, StorageProvider, TrafficProvider, WorkflowProvider};
+use crate::traits::{ApiGatewayProvider, AutoScalingProvider, CacheDbProvider, CdnProvider, ComputeProvider, ContainerRegistryProvider, DatabaseProvider, DnsProvider, IamProvider, IoTProvider, KmsProvider, KubernetesProvider, MessagingProvider, MlProvider, NetworkingProvider, NoSqlProvider, ServerlessProvider, StorageProvider, TrafficProvider, VolumeProvider, WafProvider, WorkflowProvider};
 
 /// Context passed to factory functions for creating providers.
 pub struct ProviderContext {
@@ -191,8 +191,16 @@ pub fn get_api_gateway_provider(
 ) -> Box<dyn ApiGatewayProvider> {
     if ctx.flags.use_real_sdk() {
         if let (Some(creds), Some(cache)) = (&ctx.credentials, &ctx.cache) {
-            if provider == CloudProvider::Aws {
-                return Box::new(AwsSdkProvider::new(creds.clone(), cache.clone(), "us-east-1".to_owned()));
+            match provider {
+                CloudProvider::Aws => {
+                    return Box::new(AwsSdkProvider::new(creds.clone(), cache.clone(), "us-east-1".to_owned()));
+                }
+                CloudProvider::Gcp => {
+                    return Box::new(GcpSdkProvider::new(creds.clone(), cache.clone(), gcp_project_id()));
+                }
+                CloudProvider::Azure => {
+                    return Box::new(AzureSdkProvider::new(creds.clone(), cache.clone(), azure_subscription_id()));
+                }
             }
         }
     }
@@ -211,8 +219,16 @@ pub fn get_cdn_provider(
 ) -> Box<dyn CdnProvider> {
     if ctx.flags.use_real_sdk() {
         if let (Some(creds), Some(cache)) = (&ctx.credentials, &ctx.cache) {
-            if provider == CloudProvider::Aws {
-                return Box::new(AwsSdkProvider::new(creds.clone(), cache.clone(), "us-east-1".to_owned()));
+            match provider {
+                CloudProvider::Aws => {
+                    return Box::new(AwsSdkProvider::new(creds.clone(), cache.clone(), "us-east-1".to_owned()));
+                }
+                CloudProvider::Gcp => {
+                    return Box::new(GcpSdkProvider::new(creds.clone(), cache.clone(), gcp_project_id()));
+                }
+                CloudProvider::Azure => {
+                    return Box::new(AzureSdkProvider::new(creds.clone(), cache.clone(), azure_subscription_id()));
+                }
             }
         }
     }
@@ -229,6 +245,22 @@ pub fn get_traffic_provider(
     provider: CloudProvider,
     ctx: &ProviderContext,
 ) -> Box<dyn TrafficProvider> {
+    if ctx.flags.use_real_sdk() {
+        if let (Some(creds), Some(cache)) = (&ctx.credentials, &ctx.cache) {
+            match provider {
+                CloudProvider::Aws => {
+                    return Box::new(AwsSdkProvider::new(creds.clone(), cache.clone(), "us-east-1".to_owned()));
+                }
+                CloudProvider::Gcp => {
+                    return Box::new(GcpSdkProvider::new(creds.clone(), cache.clone(), gcp_project_id()));
+                }
+                CloudProvider::Azure => {
+                    return Box::new(AzureSdkProvider::new(creds.clone(), cache.clone(), azure_subscription_id()));
+                }
+            }
+        }
+    }
+
     match provider {
         CloudProvider::Aws => Box::new(AwsProvider::new(provider, ctx.store.clone())),
         CloudProvider::Gcp => Box::new(GcpProvider::new(provider, ctx.store.clone())),
@@ -237,10 +269,26 @@ pub fn get_traffic_provider(
 }
 
 /// Factory function to get a kubernetes provider for the given cloud provider.
+/// Note: AWS SDK Kubernetes impl is stubbed (returns errors). GCP SDK is fully implemented.
+/// Azure SDK has partial implementation. Mock fallback is always available.
 pub fn get_kubernetes_provider(
     provider: CloudProvider,
     ctx: &ProviderContext,
 ) -> Box<dyn KubernetesProvider> {
+    if ctx.flags.use_real_sdk() {
+        if let (Some(creds), Some(cache)) = (&ctx.credentials, &ctx.cache) {
+            match provider {
+                CloudProvider::Gcp => {
+                    return Box::new(GcpSdkProvider::new(creds.clone(), cache.clone(), gcp_project_id()));
+                }
+                CloudProvider::Azure => {
+                    return Box::new(AzureSdkProvider::new(creds.clone(), cache.clone(), azure_subscription_id()));
+                }
+                CloudProvider::Aws => {} // AWS SDK Kubernetes is stubbed (returns errors)
+            }
+        }
+    }
+
     match provider {
         CloudProvider::Aws => Box::new(AwsProvider::new(provider, ctx.store.clone())),
         CloudProvider::Gcp => Box::new(GcpProvider::new(provider, ctx.store.clone())),
@@ -255,8 +303,16 @@ pub fn get_nosql_provider(
 ) -> Box<dyn NoSqlProvider> {
     if ctx.flags.use_real_sdk() {
         if let (Some(creds), Some(cache)) = (&ctx.credentials, &ctx.cache) {
-            if provider == CloudProvider::Aws {
-                return Box::new(AwsSdkProvider::new(creds.clone(), cache.clone(), "us-east-1".to_owned()));
+            match provider {
+                CloudProvider::Aws => {
+                    return Box::new(AwsSdkProvider::new(creds.clone(), cache.clone(), "us-east-1".to_owned()));
+                }
+                CloudProvider::Gcp => {
+                    return Box::new(GcpSdkProvider::new(creds.clone(), cache.clone(), gcp_project_id()));
+                }
+                CloudProvider::Azure => {
+                    return Box::new(AzureSdkProvider::new(creds.clone(), cache.clone(), azure_subscription_id()));
+                }
             }
         }
     }
@@ -275,8 +331,16 @@ pub fn get_cache_db_provider(
 ) -> Box<dyn CacheDbProvider> {
     if ctx.flags.use_real_sdk() {
         if let (Some(creds), Some(cache)) = (&ctx.credentials, &ctx.cache) {
-            if provider == CloudProvider::Aws {
-                return Box::new(AwsSdkProvider::new(creds.clone(), cache.clone(), "us-east-1".to_owned()));
+            match provider {
+                CloudProvider::Aws => {
+                    return Box::new(AwsSdkProvider::new(creds.clone(), cache.clone(), "us-east-1".to_owned()));
+                }
+                CloudProvider::Gcp => {
+                    return Box::new(GcpSdkProvider::new(creds.clone(), cache.clone(), gcp_project_id()));
+                }
+                CloudProvider::Azure => {
+                    return Box::new(AzureSdkProvider::new(creds.clone(), cache.clone(), azure_subscription_id()));
+                }
             }
         }
     }
@@ -293,6 +357,22 @@ pub fn get_iot_provider(
     provider: CloudProvider,
     ctx: &ProviderContext,
 ) -> Box<dyn IoTProvider> {
+    if ctx.flags.use_real_sdk() {
+        if let (Some(creds), Some(cache)) = (&ctx.credentials, &ctx.cache) {
+            match provider {
+                CloudProvider::Gcp => {
+                    return Box::new(GcpSdkProvider::new(creds.clone(), cache.clone(), gcp_project_id()));
+                }
+                CloudProvider::Azure => {
+                    return Box::new(AzureSdkProvider::new(creds.clone(), cache.clone(), azure_subscription_id()));
+                }
+                CloudProvider::Aws => {
+                    return Box::new(AwsSdkProvider::new(creds.clone(), cache.clone(), "us-east-1".to_string()));
+                }
+            }
+        }
+    }
+
     match provider {
         CloudProvider::Aws => Box::new(AwsProvider::new(provider, ctx.store.clone())),
         CloudProvider::Gcp => Box::new(GcpProvider::new(provider, ctx.store.clone())),
@@ -305,6 +385,22 @@ pub fn get_ml_provider(
     provider: CloudProvider,
     ctx: &ProviderContext,
 ) -> Box<dyn MlProvider> {
+    if ctx.flags.use_real_sdk() {
+        if let (Some(creds), Some(cache)) = (&ctx.credentials, &ctx.cache) {
+            match provider {
+                CloudProvider::Gcp => {
+                    return Box::new(GcpSdkProvider::new(creds.clone(), cache.clone(), gcp_project_id()));
+                }
+                CloudProvider::Azure => {
+                    return Box::new(AzureSdkProvider::new(creds.clone(), cache.clone(), azure_subscription_id()));
+                }
+                CloudProvider::Aws => {
+                    return Box::new(AwsSdkProvider::new(creds.clone(), cache.clone(), "us-east-1".to_string()));
+                }
+            }
+        }
+    }
+
     match provider {
         CloudProvider::Aws => Box::new(AwsProvider::new(provider, ctx.store.clone())),
         CloudProvider::Gcp => Box::new(GcpProvider::new(provider, ctx.store.clone())),
@@ -319,8 +415,16 @@ pub fn get_container_registry_provider(
 ) -> Box<dyn ContainerRegistryProvider> {
     if ctx.flags.use_real_sdk() {
         if let (Some(creds), Some(cache)) = (&ctx.credentials, &ctx.cache) {
-            if provider == CloudProvider::Aws {
-                return Box::new(AwsSdkProvider::new(creds.clone(), cache.clone(), "us-east-1".to_owned()));
+            match provider {
+                CloudProvider::Aws => {
+                    return Box::new(AwsSdkProvider::new(creds.clone(), cache.clone(), "us-east-1".to_owned()));
+                }
+                CloudProvider::Gcp => {
+                    return Box::new(GcpSdkProvider::new(creds.clone(), cache.clone(), gcp_project_id()));
+                }
+                CloudProvider::Azure => {
+                    return Box::new(AzureSdkProvider::new(creds.clone(), cache.clone(), azure_subscription_id()));
+                }
             }
         }
     }
@@ -339,8 +443,217 @@ pub fn get_workflow_provider(
 ) -> Box<dyn WorkflowProvider> {
     if ctx.flags.use_real_sdk() {
         if let (Some(creds), Some(cache)) = (&ctx.credentials, &ctx.cache) {
-            if provider == CloudProvider::Aws {
-                return Box::new(AwsSdkProvider::new(creds.clone(), cache.clone(), "us-east-1".to_owned()));
+            match provider {
+                CloudProvider::Aws => {
+                    return Box::new(AwsSdkProvider::new(creds.clone(), cache.clone(), "us-east-1".to_owned()));
+                }
+                CloudProvider::Gcp => {
+                    return Box::new(GcpSdkProvider::new(creds.clone(), cache.clone(), gcp_project_id()));
+                }
+                CloudProvider::Azure => {
+                    return Box::new(AzureSdkProvider::new(creds.clone(), cache.clone(), azure_subscription_id()));
+                }
+            }
+        }
+    }
+
+    match provider {
+        CloudProvider::Aws => Box::new(AwsProvider::new(provider, ctx.store.clone())),
+        CloudProvider::Gcp => Box::new(GcpProvider::new(provider, ctx.store.clone())),
+        CloudProvider::Azure => Box::new(AzureProvider::new(provider, ctx.store.clone())),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// New factory functions for traits previously without factories.
+// All 3 clouds now route to SDK providers when use_real_sdk() is enabled.
+// ---------------------------------------------------------------------------
+
+/// Factory function to get an IAM provider for the given cloud provider.
+pub fn get_iam_provider(
+    provider: CloudProvider,
+    ctx: &ProviderContext,
+) -> Box<dyn IamProvider> {
+    if ctx.flags.use_real_sdk() {
+        if let (Some(creds), Some(cache)) = (&ctx.credentials, &ctx.cache) {
+            match provider {
+                CloudProvider::Gcp => {
+                    return Box::new(GcpSdkProvider::new(creds.clone(), cache.clone(), gcp_project_id()));
+                }
+                CloudProvider::Azure => {
+                    return Box::new(AzureSdkProvider::new(creds.clone(), cache.clone(), azure_subscription_id()));
+                }
+                CloudProvider::Aws => {
+                    return Box::new(AwsSdkProvider::new(creds.clone(), cache.clone(), "us-east-1".to_string()));
+                }
+            }
+        }
+    }
+
+    match provider {
+        CloudProvider::Aws => Box::new(AwsProvider::new(provider, ctx.store.clone())),
+        CloudProvider::Gcp => Box::new(GcpProvider::new(provider, ctx.store.clone())),
+        CloudProvider::Azure => Box::new(AzureProvider::new(provider, ctx.store.clone())),
+    }
+}
+
+/// Factory function to get a DNS provider for the given cloud provider.
+pub fn get_dns_provider(
+    provider: CloudProvider,
+    ctx: &ProviderContext,
+) -> Box<dyn DnsProvider> {
+    if ctx.flags.use_real_sdk() {
+        if let (Some(creds), Some(cache)) = (&ctx.credentials, &ctx.cache) {
+            match provider {
+                CloudProvider::Gcp => {
+                    return Box::new(GcpSdkProvider::new(creds.clone(), cache.clone(), gcp_project_id()));
+                }
+                CloudProvider::Azure => {
+                    return Box::new(AzureSdkProvider::new(creds.clone(), cache.clone(), azure_subscription_id()));
+                }
+                CloudProvider::Aws => {
+                    return Box::new(AwsSdkProvider::new(creds.clone(), cache.clone(), "us-east-1".to_string()));
+                }
+            }
+        }
+    }
+
+    match provider {
+        CloudProvider::Aws => Box::new(AwsProvider::new(provider, ctx.store.clone())),
+        CloudProvider::Gcp => Box::new(GcpProvider::new(provider, ctx.store.clone())),
+        CloudProvider::Azure => Box::new(AzureProvider::new(provider, ctx.store.clone())),
+    }
+}
+
+/// Factory function to get a WAF provider for the given cloud provider.
+pub fn get_waf_provider(
+    provider: CloudProvider,
+    ctx: &ProviderContext,
+) -> Box<dyn WafProvider> {
+    if ctx.flags.use_real_sdk() {
+        if let (Some(creds), Some(cache)) = (&ctx.credentials, &ctx.cache) {
+            match provider {
+                CloudProvider::Gcp => {
+                    return Box::new(GcpSdkProvider::new(creds.clone(), cache.clone(), gcp_project_id()));
+                }
+                CloudProvider::Azure => {
+                    return Box::new(AzureSdkProvider::new(creds.clone(), cache.clone(), azure_subscription_id()));
+                }
+                CloudProvider::Aws => {
+                    return Box::new(AwsSdkProvider::new(creds.clone(), cache.clone(), "us-east-1".to_string()));
+                }
+            }
+        }
+    }
+
+    match provider {
+        CloudProvider::Aws => Box::new(AwsProvider::new(provider, ctx.store.clone())),
+        CloudProvider::Gcp => Box::new(GcpProvider::new(provider, ctx.store.clone())),
+        CloudProvider::Azure => Box::new(AzureProvider::new(provider, ctx.store.clone())),
+    }
+}
+
+/// Factory function to get a messaging provider for the given cloud provider.
+pub fn get_messaging_provider(
+    provider: CloudProvider,
+    ctx: &ProviderContext,
+) -> Box<dyn MessagingProvider> {
+    if ctx.flags.use_real_sdk() {
+        if let (Some(creds), Some(cache)) = (&ctx.credentials, &ctx.cache) {
+            match provider {
+                CloudProvider::Gcp => {
+                    return Box::new(GcpSdkProvider::new(creds.clone(), cache.clone(), gcp_project_id()));
+                }
+                CloudProvider::Azure => {
+                    return Box::new(AzureSdkProvider::new(creds.clone(), cache.clone(), azure_subscription_id()));
+                }
+                CloudProvider::Aws => {
+                    return Box::new(AwsSdkProvider::new(creds.clone(), cache.clone(), "us-east-1".to_string()));
+                }
+            }
+        }
+    }
+
+    match provider {
+        CloudProvider::Aws => Box::new(AwsProvider::new(provider, ctx.store.clone())),
+        CloudProvider::Gcp => Box::new(GcpProvider::new(provider, ctx.store.clone())),
+        CloudProvider::Azure => Box::new(AzureProvider::new(provider, ctx.store.clone())),
+    }
+}
+
+/// Factory function to get a KMS provider for the given cloud provider.
+pub fn get_kms_provider(
+    provider: CloudProvider,
+    ctx: &ProviderContext,
+) -> Box<dyn KmsProvider> {
+    if ctx.flags.use_real_sdk() {
+        if let (Some(creds), Some(cache)) = (&ctx.credentials, &ctx.cache) {
+            match provider {
+                CloudProvider::Gcp => {
+                    return Box::new(GcpSdkProvider::new(creds.clone(), cache.clone(), gcp_project_id()));
+                }
+                CloudProvider::Azure => {
+                    return Box::new(AzureSdkProvider::new(creds.clone(), cache.clone(), azure_subscription_id()));
+                }
+                CloudProvider::Aws => {
+                    return Box::new(AwsSdkProvider::new(creds.clone(), cache.clone(), "us-east-1".to_string()));
+                }
+            }
+        }
+    }
+
+    match provider {
+        CloudProvider::Aws => Box::new(AwsProvider::new(provider, ctx.store.clone())),
+        CloudProvider::Gcp => Box::new(GcpProvider::new(provider, ctx.store.clone())),
+        CloudProvider::Azure => Box::new(AzureProvider::new(provider, ctx.store.clone())),
+    }
+}
+
+/// Factory function to get an auto-scaling provider for the given cloud provider.
+pub fn get_autoscaling_provider(
+    provider: CloudProvider,
+    ctx: &ProviderContext,
+) -> Box<dyn AutoScalingProvider> {
+    if ctx.flags.use_real_sdk() {
+        if let (Some(creds), Some(cache)) = (&ctx.credentials, &ctx.cache) {
+            match provider {
+                CloudProvider::Gcp => {
+                    return Box::new(GcpSdkProvider::new(creds.clone(), cache.clone(), gcp_project_id()));
+                }
+                CloudProvider::Azure => {
+                    return Box::new(AzureSdkProvider::new(creds.clone(), cache.clone(), azure_subscription_id()));
+                }
+                CloudProvider::Aws => {
+                    return Box::new(AwsSdkProvider::new(creds.clone(), cache.clone(), "us-east-1".to_string()));
+                }
+            }
+        }
+    }
+
+    match provider {
+        CloudProvider::Aws => Box::new(AwsProvider::new(provider, ctx.store.clone())),
+        CloudProvider::Gcp => Box::new(GcpProvider::new(provider, ctx.store.clone())),
+        CloudProvider::Azure => Box::new(AzureProvider::new(provider, ctx.store.clone())),
+    }
+}
+
+/// Factory function to get a volume provider for the given cloud provider.
+pub fn get_volume_provider(
+    provider: CloudProvider,
+    ctx: &ProviderContext,
+) -> Box<dyn VolumeProvider> {
+    if ctx.flags.use_real_sdk() {
+        if let (Some(creds), Some(cache)) = (&ctx.credentials, &ctx.cache) {
+            match provider {
+                CloudProvider::Gcp => {
+                    return Box::new(GcpSdkProvider::new(creds.clone(), cache.clone(), gcp_project_id()));
+                }
+                CloudProvider::Azure => {
+                    return Box::new(AzureSdkProvider::new(creds.clone(), cache.clone(), azure_subscription_id()));
+                }
+                CloudProvider::Aws => {
+                    return Box::new(AwsSdkProvider::new(creds.clone(), cache.clone(), "us-east-1".to_string()));
+                }
             }
         }
     }

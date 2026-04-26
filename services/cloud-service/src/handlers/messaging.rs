@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use crate::error::CloudError;
 use crate::models::{CloudProvider, ResourceListResponse};
+use crate::providers;
 use crate::providers::ProviderContext;
 
 #[derive(Debug, Deserialize)]
@@ -50,14 +51,13 @@ fn default_region(provider: CloudProvider, query_region: Option<&str>) -> String
 pub async fn list_queues(
     path: web::Path<ProviderPath>,
     query: web::Query<RegionQuery>,
-    _ctx: web::Data<Arc<ProviderContext>>,
+    ctx: web::Data<Arc<ProviderContext>>,
 ) -> Result<HttpResponse, CloudError> {
     let provider = parse_provider(&path.provider)?;
     let region = default_region(provider, query.region.as_deref());
 
-    // SDK integration for SQS/Cloud Tasks/Azure Queue
-    let queues = vec![]; // Will be populated by real SDK provider
-    let _ = region;
+    let messaging = providers::get_messaging_provider(provider, ctx.get_ref());
+    let queues = messaging.list_queues(&region).await?;
 
     Ok(HttpResponse::Ok().json(ResourceListResponse {
         total: queues.len(),
@@ -70,19 +70,30 @@ pub async fn list_queues(
 pub async fn create_queue(
     path: web::Path<ProviderPath>,
     body: web::Json<CreateQueueRequest>,
-    _ctx: web::Data<Arc<ProviderContext>>,
+    ctx: web::Data<Arc<ProviderContext>>,
 ) -> Result<HttpResponse, CloudError> {
-    let _provider = parse_provider(&path.provider)?;
-    let _config = body.into_inner();
-    Ok(HttpResponse::Created().json(serde_json::json!({"status": "created"})))
+    let provider = parse_provider(&path.provider)?;
+    let config = body.into_inner();
+    let region = default_region(provider, None);
+
+    let messaging = providers::get_messaging_provider(provider, ctx.get_ref());
+    let queue = messaging.create_queue(&region, &config.name, config.fifo.unwrap_or(false)).await?;
+
+    Ok(HttpResponse::Created().json(queue))
 }
 
 /// DELETE /api/v1/cloud/{provider}/messaging/queues/{id}
 pub async fn delete_queue(
     path: web::Path<ResourcePath>,
-    _ctx: web::Data<Arc<ProviderContext>>,
+    query: web::Query<RegionQuery>,
+    ctx: web::Data<Arc<ProviderContext>>,
 ) -> Result<HttpResponse, CloudError> {
-    let _provider = parse_provider(&path.provider)?;
+    let provider = parse_provider(&path.provider)?;
+    let region = default_region(provider, query.region.as_deref());
+
+    let messaging = providers::get_messaging_provider(provider, ctx.get_ref());
+    messaging.delete_queue(&region, &path.id).await?;
+
     Ok(HttpResponse::NoContent().finish())
 }
 
@@ -90,13 +101,14 @@ pub async fn delete_queue(
 pub async fn list_topics(
     path: web::Path<ProviderPath>,
     query: web::Query<RegionQuery>,
-    _ctx: web::Data<Arc<ProviderContext>>,
+    ctx: web::Data<Arc<ProviderContext>>,
 ) -> Result<HttpResponse, CloudError> {
     let provider = parse_provider(&path.provider)?;
     let region = default_region(provider, query.region.as_deref());
-    let _ = region;
 
-    let topics = vec![];
+    let messaging = providers::get_messaging_provider(provider, ctx.get_ref());
+    let topics = messaging.list_topics(&region).await?;
+
     Ok(HttpResponse::Ok().json(ResourceListResponse {
         total: topics.len(),
         resources: topics,
@@ -108,18 +120,29 @@ pub async fn list_topics(
 pub async fn create_topic(
     path: web::Path<ProviderPath>,
     body: web::Json<CreateTopicRequest>,
-    _ctx: web::Data<Arc<ProviderContext>>,
+    ctx: web::Data<Arc<ProviderContext>>,
 ) -> Result<HttpResponse, CloudError> {
-    let _provider = parse_provider(&path.provider)?;
-    let _config = body.into_inner();
-    Ok(HttpResponse::Created().json(serde_json::json!({"status": "created"})))
+    let provider = parse_provider(&path.provider)?;
+    let config = body.into_inner();
+    let region = default_region(provider, None);
+
+    let messaging = providers::get_messaging_provider(provider, ctx.get_ref());
+    let topic = messaging.create_topic(&region, &config.name).await?;
+
+    Ok(HttpResponse::Created().json(topic))
 }
 
 /// DELETE /api/v1/cloud/{provider}/messaging/topics/{id}
 pub async fn delete_topic(
     path: web::Path<ResourcePath>,
-    _ctx: web::Data<Arc<ProviderContext>>,
+    query: web::Query<RegionQuery>,
+    ctx: web::Data<Arc<ProviderContext>>,
 ) -> Result<HttpResponse, CloudError> {
-    let _provider = parse_provider(&path.provider)?;
+    let provider = parse_provider(&path.provider)?;
+    let region = default_region(provider, query.region.as_deref());
+
+    let messaging = providers::get_messaging_provider(provider, ctx.get_ref());
+    messaging.delete_topic(&region, &path.id).await?;
+
     Ok(HttpResponse::NoContent().finish())
 }

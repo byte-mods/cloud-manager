@@ -8,7 +8,7 @@ use crate::error::CloudError;
 use crate::models::*;
 use crate::providers::store::InMemoryStore;
 use crate::traits::compute::Result;
-use crate::traits::{ApiGatewayProvider, CacheDbProvider, CdnProvider, ComputeProvider, ContainerRegistryProvider, DatabaseProvider, IoTProvider, KubernetesProvider, MlProvider, NetworkingProvider, NoSqlProvider, ServerlessProvider, StorageProvider, TrafficProvider, WorkflowProvider};
+use crate::traits::{ApiGatewayProvider, AutoScalingProvider, CacheDbProvider, CdnProvider, ComputeProvider, ContainerRegistryProvider, DatabaseProvider, DnsProvider, IamProvider, IoTProvider, KmsProvider, KubernetesProvider, MessagingProvider, MlProvider, NetworkingProvider, NoSqlProvider, ServerlessProvider, StorageProvider, TrafficProvider, VolumeProvider, WafProvider, WorkflowProvider};
 
 /// GCP cloud provider backed by InMemoryStore.
 pub struct GcpProvider {
@@ -1090,4 +1090,443 @@ impl WorkflowProvider for GcpProvider {
         Err(CloudError::ProviderError(format!("GCP Workflows start_execution not yet implemented in {}", region)))
     }
     async fn list_executions(&self, _region: &str, _arn: &str) -> Result<Vec<CloudResource>> { Ok(vec![]) }
+}
+
+// ---------------------------------------------------------------------------
+// IAM Provider
+// ---------------------------------------------------------------------------
+
+#[async_trait]
+impl IamProvider for GcpProvider {
+    async fn list_users(&self, region: &str) -> Result<Vec<CloudResource>> {
+        tracing::info!(provider = "gcp", region = region, "Listing IAM users");
+        Ok(self.store.list(self.provider, Some(region), Some(ResourceType::IamUser)))
+    }
+
+    async fn create_user(&self, region: &str, username: &str) -> Result<CloudResource> {
+        tracing::info!(provider = "gcp", region = region, username = username, "Creating IAM user");
+        let resource = self.make_resource(
+            ResourceType::IamUser,
+            username,
+            region,
+            ResourceStatus::Available,
+            serde_json::json!({"username": username, "platform": "gcp_iam"}),
+            HashMap::new(),
+        );
+        self.store.insert(resource.clone());
+        Ok(resource)
+    }
+
+    async fn delete_user(&self, region: &str, username: &str) -> Result<()> {
+        tracing::info!(provider = "gcp", region = region, username = username, "Deleting IAM user");
+        if let Some(r) = self.store.get_by_name(username, self.provider, ResourceType::IamUser) {
+            self.store.delete(r.id);
+            return Ok(());
+        }
+        Err(CloudError::NotFound(format!("GCP IAM user {} not found in {}", username, region)))
+    }
+
+    async fn list_roles(&self, region: &str) -> Result<Vec<CloudResource>> {
+        tracing::info!(provider = "gcp", region = region, "Listing IAM roles");
+        Ok(self.store.list(self.provider, Some(region), Some(ResourceType::IamRole)))
+    }
+
+    async fn create_role(&self, region: &str, name: &str, trust_policy: &str) -> Result<CloudResource> {
+        tracing::info!(provider = "gcp", region = region, name = name, "Creating IAM role");
+        let resource = self.make_resource(
+            ResourceType::IamRole,
+            name,
+            region,
+            ResourceStatus::Available,
+            serde_json::json!({"trust_policy": trust_policy, "platform": "gcp_iam"}),
+            HashMap::new(),
+        );
+        self.store.insert(resource.clone());
+        Ok(resource)
+    }
+
+    async fn delete_role(&self, region: &str, name: &str) -> Result<()> {
+        tracing::info!(provider = "gcp", region = region, name = name, "Deleting IAM role");
+        if let Some(r) = self.store.get_by_name(name, self.provider, ResourceType::IamRole) {
+            self.store.delete(r.id);
+            return Ok(());
+        }
+        Err(CloudError::NotFound(format!("GCP IAM role {} not found in {}", name, region)))
+    }
+
+    async fn list_policies(&self, region: &str) -> Result<Vec<CloudResource>> {
+        tracing::info!(provider = "gcp", region = region, "Listing IAM policies");
+        Ok(self.store.list(self.provider, Some(region), Some(ResourceType::IamPolicy)))
+    }
+
+    async fn attach_policy(&self, region: &str, target: &str, policy_arn: &str) -> Result<()> {
+        tracing::info!(provider = "gcp", region = region, target = target, policy = policy_arn, "Attaching IAM policy");
+        Ok(())
+    }
+
+    async fn detach_policy(&self, region: &str, target: &str, policy_arn: &str) -> Result<()> {
+        tracing::info!(provider = "gcp", region = region, target = target, policy = policy_arn, "Detaching IAM policy");
+        Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// DNS Provider
+// ---------------------------------------------------------------------------
+
+#[async_trait]
+impl DnsProvider for GcpProvider {
+    async fn list_hosted_zones(&self, region: &str) -> Result<Vec<CloudResource>> {
+        tracing::info!(provider = "gcp", region = region, "Listing Cloud DNS zones");
+        Ok(self.store.list(self.provider, Some(region), Some(ResourceType::DnsZone)))
+    }
+
+    async fn list_records(&self, region: &str, zone_id: &str) -> Result<Vec<CloudResource>> {
+        tracing::info!(provider = "gcp", region = region, zone_id = zone_id, "Listing DNS records");
+        Ok(self.store.list(self.provider, Some(region), Some(ResourceType::DnsRecord)))
+    }
+
+    async fn create_record(&self, region: &str, zone_id: &str, record: DnsRecordInput) -> Result<CloudResource> {
+        tracing::info!(provider = "gcp", region = region, zone_id = zone_id, name = record.name.as_str(), "Creating DNS record");
+        let resource = self.make_resource(
+            ResourceType::DnsRecord,
+            &record.name,
+            region,
+            ResourceStatus::Available,
+            serde_json::json!({
+                "zone_id": zone_id,
+                "record_type": record.record_type,
+                "ttl": record.ttl,
+                "values": record.values,
+            }),
+            HashMap::new(),
+        );
+        self.store.insert(resource.clone());
+        Ok(resource)
+    }
+
+    async fn delete_record(&self, region: &str, zone_id: &str, record: DnsRecordInput) -> Result<()> {
+        tracing::info!(provider = "gcp", region = region, zone_id = zone_id, name = record.name.as_str(), "Deleting DNS record");
+        if let Some(r) = self.store.get_by_name(&record.name, self.provider, ResourceType::DnsRecord) {
+            self.store.delete(r.id);
+            return Ok(());
+        }
+        Err(CloudError::NotFound(format!("GCP DNS record {} not found in zone {}", record.name, zone_id)))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// WAF Provider
+// ---------------------------------------------------------------------------
+
+#[async_trait]
+impl WafProvider for GcpProvider {
+    async fn list_web_acls(&self, region: &str) -> Result<Vec<CloudResource>> {
+        tracing::info!(provider = "gcp", region = region, "Listing Cloud Armor policies");
+        Ok(self.store.list(self.provider, Some(region), Some(ResourceType::WafRule)))
+    }
+
+    async fn get_web_acl(&self, region: &str, id: &str) -> Result<CloudResource> {
+        tracing::info!(provider = "gcp", region = region, id = id, "Getting Cloud Armor policy");
+        let uuid = Uuid::parse_str(id)
+            .map_err(|_| CloudError::BadRequest(format!("Invalid UUID: {}", id)))?;
+        self.store
+            .get(uuid)
+            .filter(|r| r.provider == self.provider && r.resource_type == ResourceType::WafRule)
+            .ok_or_else(|| CloudError::NotFound(format!("GCP Cloud Armor policy {} not found in {}", id, region)))
+    }
+
+    async fn list_rules(&self, region: &str, acl_id: &str) -> Result<Vec<CloudResource>> {
+        tracing::info!(provider = "gcp", region = region, acl_id = acl_id, "Listing Cloud Armor rules");
+        Ok(self.store.list(self.provider, Some(region), Some(ResourceType::WafRule)))
+    }
+
+    async fn create_web_acl(&self, region: &str, name: &str) -> Result<CloudResource> {
+        tracing::info!(provider = "gcp", region = region, name = name, "Creating Cloud Armor policy");
+        let resource = self.make_resource(
+            ResourceType::WafRule,
+            name,
+            region,
+            ResourceStatus::Available,
+            serde_json::json!({"platform": "cloud_armor", "type": "security_policy"}),
+            HashMap::new(),
+        );
+        self.store.insert(resource.clone());
+        Ok(resource)
+    }
+
+    async fn delete_web_acl(&self, _region: &str, id: &str) -> Result<()> {
+        tracing::info!(provider = "gcp", id = id, "Deleting Cloud Armor policy");
+        let uuid = Uuid::parse_str(id)
+            .map_err(|_| CloudError::BadRequest(format!("Invalid UUID: {}", id)))?;
+        self.store.delete(uuid);
+        Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Messaging Provider
+// ---------------------------------------------------------------------------
+
+#[async_trait]
+impl MessagingProvider for GcpProvider {
+    async fn list_queues(&self, region: &str) -> Result<Vec<CloudResource>> {
+        tracing::info!(provider = "gcp", region = region, "Listing Cloud Tasks queues");
+        Ok(self.store.list(self.provider, Some(region), Some(ResourceType::Queue)))
+    }
+
+    async fn get_queue(&self, region: &str, id: &str) -> Result<CloudResource> {
+        tracing::info!(provider = "gcp", region = region, id = id, "Getting Cloud Tasks queue");
+        let uuid = Uuid::parse_str(id)
+            .map_err(|_| CloudError::BadRequest(format!("Invalid UUID: {}", id)))?;
+        self.store
+            .get(uuid)
+            .filter(|r| r.provider == self.provider && r.resource_type == ResourceType::Queue)
+            .ok_or_else(|| CloudError::NotFound(format!("GCP queue {} not found in {}", id, region)))
+    }
+
+    async fn create_queue(&self, region: &str, name: &str, fifo: bool) -> Result<CloudResource> {
+        tracing::info!(provider = "gcp", region = region, name = name, "Creating Cloud Tasks queue");
+        let resource = self.make_resource(
+            ResourceType::Queue,
+            name,
+            region,
+            ResourceStatus::Available,
+            serde_json::json!({"platform": "cloud_tasks", "fifo": fifo}),
+            HashMap::new(),
+        );
+        self.store.insert(resource.clone());
+        Ok(resource)
+    }
+
+    async fn delete_queue(&self, _region: &str, id: &str) -> Result<()> {
+        tracing::info!(provider = "gcp", id = id, "Deleting Cloud Tasks queue");
+        let uuid = Uuid::parse_str(id)
+            .map_err(|_| CloudError::BadRequest(format!("Invalid UUID: {}", id)))?;
+        self.store.delete(uuid);
+        Ok(())
+    }
+
+    async fn list_topics(&self, region: &str) -> Result<Vec<CloudResource>> {
+        tracing::info!(provider = "gcp", region = region, "Listing Pub/Sub topics");
+        Ok(self.store.list(self.provider, Some(region), Some(ResourceType::Topic)))
+    }
+
+    async fn create_topic(&self, region: &str, name: &str) -> Result<CloudResource> {
+        tracing::info!(provider = "gcp", region = region, name = name, "Creating Pub/Sub topic");
+        let resource = self.make_resource(
+            ResourceType::Topic,
+            name,
+            region,
+            ResourceStatus::Available,
+            serde_json::json!({"platform": "pubsub"}),
+            HashMap::new(),
+        );
+        self.store.insert(resource.clone());
+        Ok(resource)
+    }
+
+    async fn delete_topic(&self, _region: &str, id: &str) -> Result<()> {
+        tracing::info!(provider = "gcp", id = id, "Deleting Pub/Sub topic");
+        let uuid = Uuid::parse_str(id)
+            .map_err(|_| CloudError::BadRequest(format!("Invalid UUID: {}", id)))?;
+        self.store.delete(uuid);
+        Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// KMS Provider
+// ---------------------------------------------------------------------------
+
+#[async_trait]
+impl KmsProvider for GcpProvider {
+    async fn list_keys(&self, region: &str) -> Result<Vec<CloudResource>> {
+        tracing::info!(provider = "gcp", region = region, "Listing Cloud KMS keys");
+        Ok(self.store.list(self.provider, Some(region), Some(ResourceType::KmsKey)))
+    }
+
+    async fn get_key(&self, region: &str, id: &str) -> Result<CloudResource> {
+        tracing::info!(provider = "gcp", region = region, id = id, "Getting Cloud KMS key");
+        let uuid = Uuid::parse_str(id)
+            .map_err(|_| CloudError::BadRequest(format!("Invalid UUID: {}", id)))?;
+        self.store
+            .get(uuid)
+            .filter(|r| r.provider == self.provider && r.resource_type == ResourceType::KmsKey)
+            .ok_or_else(|| CloudError::NotFound(format!("GCP KMS key {} not found in {}", id, region)))
+    }
+
+    async fn create_key(&self, region: &str, name: &str, key_type: &str) -> Result<CloudResource> {
+        tracing::info!(provider = "gcp", region = region, name = name, "Creating Cloud KMS key");
+        let resource = self.make_resource(
+            ResourceType::KmsKey,
+            name,
+            region,
+            ResourceStatus::Available,
+            serde_json::json!({"platform": "cloud_kms", "key_type": key_type, "enabled": true}),
+            HashMap::new(),
+        );
+        self.store.insert(resource.clone());
+        Ok(resource)
+    }
+
+    async fn schedule_key_deletion(&self, region: &str, id: &str) -> Result<()> {
+        tracing::info!(provider = "gcp", region = region, id = id, "Scheduling Cloud KMS key deletion");
+        let uuid = Uuid::parse_str(id)
+            .map_err(|_| CloudError::BadRequest(format!("Invalid UUID: {}", id)))?;
+        self.store.update_status(uuid, ResourceStatus::Deleting);
+        Ok(())
+    }
+
+    async fn set_key_enabled(&self, region: &str, id: &str, enabled: bool) -> Result<()> {
+        tracing::info!(provider = "gcp", region = region, id = id, enabled = enabled, "Setting Cloud KMS key enabled state");
+        let uuid = Uuid::parse_str(id)
+            .map_err(|_| CloudError::BadRequest(format!("Invalid UUID: {}", id)))?;
+        let status = if enabled { ResourceStatus::Available } else { ResourceStatus::Stopped };
+        self.store.update_status(uuid, status);
+        Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// AutoScaling Provider
+// ---------------------------------------------------------------------------
+
+#[async_trait]
+impl AutoScalingProvider for GcpProvider {
+    async fn list_groups(&self, region: &str) -> Result<Vec<CloudResource>> {
+        tracing::info!(provider = "gcp", region = region, "Listing managed instance groups");
+        Ok(self.store.list(self.provider, Some(region), Some(ResourceType::AutoScalingGroup)))
+    }
+
+    async fn get_group(&self, region: &str, id: &str) -> Result<CloudResource> {
+        tracing::info!(provider = "gcp", region = region, id = id, "Getting managed instance group");
+        let uuid = Uuid::parse_str(id)
+            .map_err(|_| CloudError::BadRequest(format!("Invalid UUID: {}", id)))?;
+        self.store
+            .get(uuid)
+            .filter(|r| r.provider == self.provider && r.resource_type == ResourceType::AutoScalingGroup)
+            .ok_or_else(|| CloudError::NotFound(format!("GCP MIG {} not found in {}", id, region)))
+    }
+
+    async fn create_group(
+        &self,
+        region: &str,
+        name: &str,
+        min_size: u32,
+        max_size: u32,
+        desired: u32,
+    ) -> Result<CloudResource> {
+        tracing::info!(provider = "gcp", region = region, name = name, "Creating managed instance group");
+        let resource = self.make_resource(
+            ResourceType::AutoScalingGroup,
+            name,
+            region,
+            ResourceStatus::Available,
+            serde_json::json!({
+                "platform": "managed_instance_group",
+                "min_size": min_size,
+                "max_size": max_size,
+                "desired_capacity": desired,
+            }),
+            HashMap::new(),
+        );
+        self.store.insert(resource.clone());
+        Ok(resource)
+    }
+
+    async fn delete_group(&self, _region: &str, id: &str) -> Result<()> {
+        tracing::info!(provider = "gcp", id = id, "Deleting managed instance group");
+        let uuid = Uuid::parse_str(id)
+            .map_err(|_| CloudError::BadRequest(format!("Invalid UUID: {}", id)))?;
+        self.store.delete(uuid);
+        Ok(())
+    }
+
+    async fn set_desired_capacity(&self, region: &str, id: &str, desired: u32) -> Result<()> {
+        tracing::info!(provider = "gcp", region = region, id = id, desired = desired, "Setting MIG desired capacity");
+        let uuid = Uuid::parse_str(id)
+            .map_err(|_| CloudError::BadRequest(format!("Invalid UUID: {}", id)))?;
+        if self.store.get(uuid).is_some() {
+            Ok(())
+        } else {
+            Err(CloudError::NotFound(format!("GCP MIG {} not found in {}", id, region)))
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Volume Provider
+// ---------------------------------------------------------------------------
+
+#[async_trait]
+impl VolumeProvider for GcpProvider {
+    async fn list_volumes(&self, region: &str) -> Result<Vec<CloudResource>> {
+        tracing::info!(provider = "gcp", region = region, "Listing Persistent Disks");
+        Ok(self.store.list(self.provider, Some(region), Some(ResourceType::Volume)))
+    }
+
+    async fn create_volume(&self, region: &str, size_gb: i32, volume_type: &str, az: &str) -> Result<CloudResource> {
+        tracing::info!(provider = "gcp", region = region, size_gb = size_gb, "Creating Persistent Disk");
+        let name = format!("pd-{}", &Uuid::new_v4().to_string()[..8]);
+        let resource = self.make_resource(
+            ResourceType::Volume,
+            &name,
+            region,
+            ResourceStatus::Available,
+            serde_json::json!({
+                "platform": "persistent_disk",
+                "size_gb": size_gb,
+                "volume_type": volume_type,
+                "availability_zone": az,
+            }),
+            HashMap::new(),
+        );
+        self.store.insert(resource.clone());
+        Ok(resource)
+    }
+
+    async fn attach_volume(&self, region: &str, volume_id: &str, instance_id: &str, device: &str) -> Result<()> {
+        tracing::info!(provider = "gcp", region = region, volume_id = volume_id, instance_id = instance_id, device = device, "Attaching Persistent Disk");
+        let uuid = Uuid::parse_str(volume_id)
+            .map_err(|_| CloudError::BadRequest(format!("Invalid UUID: {}", volume_id)))?;
+        if self.store.get(uuid).is_some() {
+            Ok(())
+        } else {
+            Err(CloudError::NotFound(format!("GCP volume {} not found in {}", volume_id, region)))
+        }
+    }
+
+    async fn detach_volume(&self, region: &str, volume_id: &str) -> Result<()> {
+        tracing::info!(provider = "gcp", region = region, volume_id = volume_id, "Detaching Persistent Disk");
+        let uuid = Uuid::parse_str(volume_id)
+            .map_err(|_| CloudError::BadRequest(format!("Invalid UUID: {}", volume_id)))?;
+        if self.store.get(uuid).is_some() {
+            Ok(())
+        } else {
+            Err(CloudError::NotFound(format!("GCP volume {} not found in {}", volume_id, region)))
+        }
+    }
+
+    async fn delete_volume(&self, _region: &str, id: &str) -> Result<()> {
+        tracing::info!(provider = "gcp", id = id, "Deleting Persistent Disk");
+        let uuid = Uuid::parse_str(id)
+            .map_err(|_| CloudError::BadRequest(format!("Invalid UUID: {}", id)))?;
+        self.store.delete(uuid);
+        Ok(())
+    }
+
+    async fn create_volume_snapshot(&self, region: &str, volume_id: &str, name: &str) -> Result<CloudResource> {
+        tracing::info!(provider = "gcp", region = region, volume_id = volume_id, name = name, "Creating Persistent Disk snapshot");
+        let resource = self.make_resource(
+            ResourceType::Snapshot,
+            name,
+            region,
+            ResourceStatus::Available,
+            serde_json::json!({"platform": "persistent_disk_snapshot", "source_volume_id": volume_id}),
+            HashMap::new(),
+        );
+        self.store.insert(resource.clone());
+        Ok(resource)
+    }
 }

@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use crate::error::CloudError;
 use crate::models::{CloudProvider, ResourceListResponse};
+use crate::providers;
 use crate::providers::ProviderContext;
 
 #[derive(Debug, Deserialize)]
@@ -56,13 +57,13 @@ fn default_region(provider: CloudProvider, query_region: Option<&str>) -> String
 pub async fn list_users(
     path: web::Path<ProviderPath>,
     query: web::Query<RegionQuery>,
-    _ctx: web::Data<Arc<ProviderContext>>,
+    ctx: web::Data<Arc<ProviderContext>>,
 ) -> Result<HttpResponse, CloudError> {
     let provider = parse_provider(&path.provider)?;
     let region = default_region(provider, query.region.as_deref());
-    let _ = region;
+    let iam = providers::get_iam_provider(provider, ctx.get_ref());
 
-    let users = vec![];
+    let users = iam.list_users(&region).await?;
     Ok(HttpResponse::Ok().json(ResourceListResponse {
         total: users.len(),
         resources: users,
@@ -74,21 +75,28 @@ pub async fn list_users(
 pub async fn create_user(
     path: web::Path<ProviderPath>,
     body: web::Json<CreateUserRequest>,
-    _ctx: web::Data<Arc<ProviderContext>>,
+    ctx: web::Data<Arc<ProviderContext>>,
 ) -> Result<HttpResponse, CloudError> {
-    let _provider = parse_provider(&path.provider)?;
-    let _config = body.into_inner();
-    Ok(HttpResponse::Created().json(serde_json::json!({"status": "created"})))
+    let provider = parse_provider(&path.provider)?;
+    let config = body.into_inner();
+    let region = default_region(provider, None);
+    let iam = providers::get_iam_provider(provider, ctx.get_ref());
+
+    let user = iam.create_user(&region, &config.username).await?;
+    Ok(HttpResponse::Created().json(user))
 }
 
 /// DELETE /api/v1/cloud/{provider}/iam/users/{name}
 pub async fn delete_user(
     path: web::Path<ResourcePath>,
     query: web::Query<RegionQuery>,
-    _ctx: web::Data<Arc<ProviderContext>>,
+    ctx: web::Data<Arc<ProviderContext>>,
 ) -> Result<HttpResponse, CloudError> {
-    let _provider = parse_provider(&path.provider)?;
-    let _region = default_region(_provider, query.region.as_deref());
+    let provider = parse_provider(&path.provider)?;
+    let region = default_region(provider, query.region.as_deref());
+    let iam = providers::get_iam_provider(provider, ctx.get_ref());
+
+    iam.delete_user(&region, &path.name).await?;
     Ok(HttpResponse::NoContent().finish())
 }
 
@@ -96,13 +104,13 @@ pub async fn delete_user(
 pub async fn list_roles(
     path: web::Path<ProviderPath>,
     query: web::Query<RegionQuery>,
-    _ctx: web::Data<Arc<ProviderContext>>,
+    ctx: web::Data<Arc<ProviderContext>>,
 ) -> Result<HttpResponse, CloudError> {
     let provider = parse_provider(&path.provider)?;
     let region = default_region(provider, query.region.as_deref());
-    let _ = region;
+    let iam = providers::get_iam_provider(provider, ctx.get_ref());
 
-    let roles = vec![];
+    let roles = iam.list_roles(&region).await?;
     Ok(HttpResponse::Ok().json(ResourceListResponse {
         total: roles.len(),
         resources: roles,
@@ -114,21 +122,28 @@ pub async fn list_roles(
 pub async fn create_role(
     path: web::Path<ProviderPath>,
     body: web::Json<CreateRoleRequest>,
-    _ctx: web::Data<Arc<ProviderContext>>,
+    ctx: web::Data<Arc<ProviderContext>>,
 ) -> Result<HttpResponse, CloudError> {
-    let _provider = parse_provider(&path.provider)?;
-    let _config = body.into_inner();
-    Ok(HttpResponse::Created().json(serde_json::json!({"status": "created"})))
+    let provider = parse_provider(&path.provider)?;
+    let config = body.into_inner();
+    let region = default_region(provider, None);
+    let iam = providers::get_iam_provider(provider, ctx.get_ref());
+
+    let role = iam.create_role(&region, &config.name, &config.trust_policy).await?;
+    Ok(HttpResponse::Created().json(role))
 }
 
 /// DELETE /api/v1/cloud/{provider}/iam/roles/{name}
 pub async fn delete_role(
     path: web::Path<ResourcePath>,
     query: web::Query<RegionQuery>,
-    _ctx: web::Data<Arc<ProviderContext>>,
+    ctx: web::Data<Arc<ProviderContext>>,
 ) -> Result<HttpResponse, CloudError> {
-    let _provider = parse_provider(&path.provider)?;
-    let _region = default_region(_provider, query.region.as_deref());
+    let provider = parse_provider(&path.provider)?;
+    let region = default_region(provider, query.region.as_deref());
+    let iam = providers::get_iam_provider(provider, ctx.get_ref());
+
+    iam.delete_role(&region, &path.name).await?;
     Ok(HttpResponse::NoContent().finish())
 }
 
@@ -136,13 +151,13 @@ pub async fn delete_role(
 pub async fn list_policies(
     path: web::Path<ProviderPath>,
     query: web::Query<RegionQuery>,
-    _ctx: web::Data<Arc<ProviderContext>>,
+    ctx: web::Data<Arc<ProviderContext>>,
 ) -> Result<HttpResponse, CloudError> {
     let provider = parse_provider(&path.provider)?;
     let region = default_region(provider, query.region.as_deref());
-    let _ = region;
+    let iam = providers::get_iam_provider(provider, ctx.get_ref());
 
-    let policies = vec![];
+    let policies = iam.list_policies(&region).await?;
     Ok(HttpResponse::Ok().json(ResourceListResponse {
         total: policies.len(),
         resources: policies,
@@ -154,10 +169,14 @@ pub async fn list_policies(
 pub async fn attach_policy(
     path: web::Path<ProviderPath>,
     body: web::Json<AttachPolicyRequest>,
-    _ctx: web::Data<Arc<ProviderContext>>,
+    ctx: web::Data<Arc<ProviderContext>>,
 ) -> Result<HttpResponse, CloudError> {
-    let _provider = parse_provider(&path.provider)?;
-    let _config = body.into_inner();
+    let provider = parse_provider(&path.provider)?;
+    let config = body.into_inner();
+    let region = default_region(provider, None);
+    let iam = providers::get_iam_provider(provider, ctx.get_ref());
+
+    iam.attach_policy(&region, &config.target, &config.policy_arn).await?;
     Ok(HttpResponse::Ok().json(serde_json::json!({"status": "policy_attached"})))
 }
 
@@ -165,9 +184,13 @@ pub async fn attach_policy(
 pub async fn detach_policy(
     path: web::Path<ProviderPath>,
     body: web::Json<AttachPolicyRequest>,
-    _ctx: web::Data<Arc<ProviderContext>>,
+    ctx: web::Data<Arc<ProviderContext>>,
 ) -> Result<HttpResponse, CloudError> {
-    let _provider = parse_provider(&path.provider)?;
-    let _config = body.into_inner();
+    let provider = parse_provider(&path.provider)?;
+    let config = body.into_inner();
+    let region = default_region(provider, None);
+    let iam = providers::get_iam_provider(provider, ctx.get_ref());
+
+    iam.detach_policy(&region, &config.target, &config.policy_arn).await?;
     Ok(HttpResponse::Ok().json(serde_json::json!({"status": "policy_detached"})))
 }

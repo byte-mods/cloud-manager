@@ -217,6 +217,148 @@ pub fn firewall_to_resource(fw: &serde_json::Value, region: &str) -> CloudResour
     }
 }
 
+pub fn address_to_resource(addr: &serde_json::Value, region: &str) -> CloudResource {
+    let name = addr["name"].as_str().unwrap_or_default().to_owned();
+    let addr_id = addr["id"].as_str().unwrap_or_default().to_owned();
+    let status_str = addr["status"].as_str().unwrap_or("RESERVED");
+    let status = match status_str {
+        "IN_USE" => ResourceStatus::Available,
+        "RESERVED" | "RESERVING" => ResourceStatus::Available,
+        _ => ResourceStatus::Pending,
+    };
+
+    CloudResource {
+        id: Uuid::new_v4(),
+        cloud_id: Some(addr_id),
+        provider: CloudProvider::Gcp,
+        resource_type: ResourceType::ElasticIp,
+        name,
+        region: region.to_owned(),
+        status,
+        metadata: serde_json::json!({
+            "address": addr["address"].as_str().unwrap_or_default(),
+            "address_type": addr["addressType"].as_str().unwrap_or("EXTERNAL"),
+            "status": status_str,
+            "network_tier": addr["networkTier"].as_str().unwrap_or("PREMIUM"),
+            "users": addr["users"],
+        }),
+        tags: extract_labels(addr),
+        created_at: Utc::now(),
+        updated_at: Utc::now(),
+    }
+}
+
+pub fn cloud_nat_to_resource(router: &serde_json::Value, nat: &serde_json::Value, region: &str) -> CloudResource {
+    let nat_name = nat["name"].as_str().unwrap_or_default().to_owned();
+    let router_name = router["name"].as_str().unwrap_or_default().to_owned();
+
+    CloudResource {
+        id: Uuid::new_v4(),
+        cloud_id: Some(format!("{}/{}", router_name, nat_name)),
+        provider: CloudProvider::Gcp,
+        resource_type: ResourceType::NatGateway,
+        name: nat_name,
+        region: region.to_owned(),
+        status: ResourceStatus::Available,
+        metadata: serde_json::json!({
+            "router": router_name,
+            "nat_ip_allocate_option": nat["natIpAllocateOption"].as_str().unwrap_or_default(),
+            "source_subnetwork_ip_ranges_to_nat": nat["sourceSubnetworkIpRangesToNat"].as_str().unwrap_or_default(),
+            "min_ports_per_vm": nat["minPortsPerVm"].as_u64().unwrap_or(0),
+            "enable_endpoint_independent_mapping": nat["enableEndpointIndependentMapping"].as_bool().unwrap_or(false),
+        }),
+        tags: HashMap::new(),
+        created_at: Utc::now(),
+        updated_at: Utc::now(),
+    }
+}
+
+pub fn route_to_resource(route: &serde_json::Value, region: &str) -> CloudResource {
+    let name = route["name"].as_str().unwrap_or_default().to_owned();
+    let route_id = route["id"].as_str().unwrap_or_default().to_owned();
+
+    CloudResource {
+        id: Uuid::new_v4(),
+        cloud_id: Some(route_id),
+        provider: CloudProvider::Gcp,
+        resource_type: ResourceType::RouteTable,
+        name,
+        region: region.to_owned(),
+        status: ResourceStatus::Available,
+        metadata: serde_json::json!({
+            "dest_range": route["destRange"].as_str().unwrap_or_default(),
+            "network": route["network"].as_str().and_then(|s| s.rsplit('/').next()),
+            "next_hop_gateway": route["nextHopGateway"].as_str().and_then(|s| s.rsplit('/').next()),
+            "next_hop_instance": route["nextHopInstance"],
+            "next_hop_ip": route["nextHopIp"],
+            "next_hop_network": route["nextHopNetwork"],
+            "priority": route["priority"].as_u64().unwrap_or(1000),
+            "tags": route["tags"],
+        }),
+        tags: HashMap::new(),
+        created_at: Utc::now(),
+        updated_at: Utc::now(),
+    }
+}
+
+pub fn internet_gw_route_to_resource(route: &serde_json::Value, region: &str) -> CloudResource {
+    let name = route["name"].as_str().unwrap_or_default().to_owned();
+    let route_id = route["id"].as_str().unwrap_or_default().to_owned();
+
+    CloudResource {
+        id: Uuid::new_v4(),
+        cloud_id: Some(route_id),
+        provider: CloudProvider::Gcp,
+        resource_type: ResourceType::InternetGateway,
+        name,
+        region: region.to_owned(),
+        status: ResourceStatus::Available,
+        metadata: serde_json::json!({
+            "dest_range": route["destRange"].as_str().unwrap_or_default(),
+            "next_hop_gateway": route["nextHopGateway"].as_str().unwrap_or_default(),
+            "network": route["network"].as_str().and_then(|s| s.rsplit('/').next()),
+            "priority": route["priority"].as_u64().unwrap_or(0),
+            "description": "GCP uses implicit internet connectivity via default routes",
+        }),
+        tags: HashMap::new(),
+        created_at: Utc::now(),
+        updated_at: Utc::now(),
+    }
+}
+
+pub fn network_peering_to_resource(network_name: &str, peering: &serde_json::Value, region: &str) -> CloudResource {
+    let name = peering["name"].as_str().unwrap_or_default().to_owned();
+    let state = peering["state"].as_str().unwrap_or("INACTIVE");
+    let status = match state {
+        "ACTIVE" => ResourceStatus::Available,
+        "INACTIVE" => ResourceStatus::Pending,
+        _ => ResourceStatus::Pending,
+    };
+
+    CloudResource {
+        id: Uuid::new_v4(),
+        cloud_id: Some(format!("{}/{}", network_name, name)),
+        provider: CloudProvider::Gcp,
+        resource_type: ResourceType::VpcPeering,
+        name: name.clone(),
+        region: region.to_owned(),
+        status,
+        metadata: serde_json::json!({
+            "network": network_name,
+            "peer_network": peering["network"].as_str().unwrap_or_default(),
+            "state": state,
+            "state_details": peering["stateDetails"].as_str().unwrap_or_default(),
+            "auto_create_routes": peering["autoCreateRoutes"].as_bool().unwrap_or(true),
+            "exchange_subnet_routes": peering["exchangeSubnetRoutes"].as_bool().unwrap_or(true),
+            "export_custom_routes": peering["exportCustomRoutes"].as_bool().unwrap_or(false),
+            "import_custom_routes": peering["importCustomRoutes"].as_bool().unwrap_or(false),
+        }),
+        tags: HashMap::new(),
+        created_at: Utc::now(),
+        updated_at: Utc::now(),
+    }
+}
+
 fn extract_labels(json: &serde_json::Value) -> HashMap<String, String> {
     json["labels"]
         .as_object()

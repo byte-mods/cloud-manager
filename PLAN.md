@@ -1,360 +1,102 @@
-# Cloud Manager — Comprehensive Implementation Plan
+# Cross-Cloud Wiring Execution Plan
 
-## Context
-
-Build a production-grade, multi-cloud management platform (GCP, AWS, Azure) serving Cloud Architects, DevOps Engineers, Data Engineers, System Admins, and Network Admins. The platform provides unified cloud infrastructure management, interactive tutorials, Claude AI-powered automation and cost optimization, and a full security testing/compliance suite.
+Sequential tasks. Each must compile (`cargo check`) before moving to next.
 
 ---
 
-## Technology Stack
+## Task 1: Wire serverless.rs handler to existing factory [C8]
+- **File**: `services/cloud-service/src/handlers/serverless.rs`
+- **Action**: Replace one-liner stubs with calls to `providers::get_serverless_provider()`
+- **Pattern**: Copy from compute.rs handler style
+- **Factory**: `get_serverless_provider()` already exists with full 3-cloud routing
+- **Status**: [x] DONE
 
-| Layer | Choice |
-|---|---|
-| Monorepo | Turborepo |
-| Frontend | Next.js 15 (App Router, TypeScript) |
-| UI | shadcn/ui + Radix + Tailwind CSS v4 |
-| State | Zustand (client) + TanStack Query v5 (server) |
-| Charts | Recharts + Apache ECharts |
-| Terminal | xterm.js |
-| Code Editor | Monaco Editor |
-| Forms | React Hook Form + Zod |
-| Backend | Rust (Actix-Web 4) microservices |
-| AI Service | Rust with Anthropic API (Claude) |
-| Database | PostgreSQL 17 + Redis 8 + MongoDB |
-| Search | Meilisearch |
-| Time Series | TimescaleDB |
-| Auth | NextAuth.js + JWT + TOTP/WebAuthn MFA |
-| Secrets | HashiCorp Vault |
-| IaC | Terraform + Pulumi |
-| Testing | Vitest + React Testing Library + Playwright + Rust tests + k6 |
-| Security Tools | OWASP ZAP + Nuclei + Trivy + ScoutSuite |
-| Container | Docker + Kubernetes (Helm) |
+## Task 2: Wire kubernetes.rs handler to existing factory [C9]
+- **File**: `services/cloud-service/src/handlers/kubernetes.rs`
+- **Action**: Replace one-liner stubs with calls to `providers::get_kubernetes_provider()`
+- **Factory**: `get_kubernetes_provider()` already exists (mock-only, but wiring is correct)
+- **Status**: [x] DONE
 
----
+## Task 3: Create 7 missing factory functions [C10]
+- **File**: `services/cloud-service/src/providers/mod.rs`
+- **Action**: Add factory functions for IAM, DNS, WAF, Messaging, KMS, AutoScaling, Volume
+- **Constraint**: Mock providers (AwsProvider, GcpProvider, AzureProvider) do NOT implement these 7 traits. GCP/Azure SDK providers DO. AWS SDK does NOT.
+- **Strategy**: Create factories that route GCP→GcpSdkProvider, Azure→AzureSdkProvider when SDK mode. For AWS and for mock fallback, need to add mock impls to the 3 mock providers first.
+- **Sub-tasks**:
+  - 3a. Add 7 trait impls to AwsProvider (mock) in aws.rs
+  - 3b. Add 7 trait impls to GcpProvider (mock) in gcp.rs
+  - 3c. Add 7 trait impls to AzureProvider (mock) in azure.rs
+  - 3d. Add 7 factory functions to mod.rs with full 3-cloud routing
+- **Status**: [x] DONE
 
-## Project Structure
+## Task 4: Wire 7 remaining stub handlers [C1-C7]
+- **Files**: iam.rs, dns.rs, waf.rs, messaging.rs, kms.rs, autoscaling.rs, volume.rs
+- **Action**: Replace `vec![]` stubs with calls to new factory functions from Task 3
+- **Depends on**: Task 3
+- **Status**: [x] DONE
 
-```
-cloud_manager/
-├── apps/
-│   └── web/                          # Next.js 15 frontend
-│       ├── app/
-│       │   ├── (auth)/               # Login, Register, Forgot Password
-│       │   ├── (dashboard)/          # Main app (sidebar layout)
-│       │   │   ├── compute/          # Instances, K8s, Serverless, Batch
-│       │   │   ├── storage/          # Object, File, Block, Archive, Backup
-│       │   │   ├── networking/       # VPC, LB, DNS, CDN, Firewall, VPN
-│       │   │   ├── databases/        # Relational, NoSQL, Cache, Warehouse
-│       │   │   ├── ai-ml/            # Models, Inference, MLOps, GenAI
-│       │   │   ├── security/          # IAM, Secrets, Certificates, Audit
-│       │   │   ├── security-testing/  # VAPT, Vuln, DDoS, Compliance
-│       │   │   ├── monitoring/        # Dashboards, Logs, Alerts, Tracing
-│       │   │   ├── devops/            # Pipelines, IaC, GitOps, Deployment
-│       │   │   ├── data-engineering/   # ETL, Streaming, Data Lake
-│       │   │   ├── cost/              # Overview, Explorer, Recommendations
-│       │   │   ├── iot/               # Devices, Twins, Rules, Fleet
-│       │   │   ├── analytics/         # Query Engines, BI, Search
-│       │   │   ├── ai/                 # Claude Terminal, Chat, Suggestions
-│       │   │   ├── learn/             # Paths, Tutorials, Sandbox, Progress
-│       │   │   └── settings/          # Profile, Org, Cloud Accounts, API Keys
-│       │   └── api/                   # Next.js BFF API routes
-│       ├── components/
-│       │   ├── ui/                    # shadcn/ui primitives
-│       │   ├── molecule/             # Composed components
-│       │   ├── organism/             # Feature-level components
-│       │   └── layout/               # Dashboard, Auth layouts
-│       ├── hooks/
-│       ├── stores/
-│       ├── lib/
-│       └── types/
-├── services/                          # Rust backend microservices
-│   ├── gateway/                       # API Gateway (auth, rate limit, routing)
-│   ├── auth-service/                  # Authentication & RBAC
-│   ├── cloud-service/                 # Multi-cloud operations (trait-based)
-│   ├── security-service/             # VAPT, compliance, scanning
-│   ├── claude-ai-service/            # AI chat, suggestions, automation
-│   ├── tutorial-service/             # Tutorials, progress, sandboxes
-│   └── cost-service/                 # Cost analysis, recommendations
-├── packages/
-│   ├── shared-types/                  # Shared TypeScript types
-│   ├── cloud-sdk-wrapper/            # Unified cloud SDK crate
-│   └── ui-kit/                       # Extended component library
-├── infra/
-│   ├── terraform/                    # IaC for deployment
-│   ├── docker/                       # Dockerfiles
-│   ├── k8s/                          # Kubernetes manifests
-│   └── docker-compose.yml           # Local dev environment
-└── docs/
-```
+## Task 5: Add GCP/Azure SDK routing to 6 AWS-only factories [C11]
+- **File**: `services/cloud-service/src/providers/mod.rs`
+- **Action**: Change `if provider == CloudProvider::Aws` to full match for api_gateway, cdn, nosql, cache_db, container_registry, workflow factories
+- **Status**: [x] DONE
+
+## Task 6: Enable SDK routing in 4 mock-only factories [C12]
+- **File**: `services/cloud-service/src/providers/mod.rs`
+- **Action**: Add `use_real_sdk()` check to traffic, kubernetes, iot, ml factories
+- **Status**: [x] DONE
+
+## Task 7: Validate — cargo check + cargo test
+- **Action**: Full build and test suite pass
+- **Result**: `cargo check` — 0 errors. `cargo test` — 27 passed, 3 failed (pre-existing cost-service budget tests, tracked as H15).
+- **Status**: [x] DONE
 
 ---
 
-## Module Breakdown (13 Modules)
-
-### 1. Compute (`/dashboard/compute`)
-- Instances: EC2, GCE, Azure VMs — CRUD, start/stop, SSH, metrics
-- Containers: ECR/GCR/ACR registries, ECS/Cloud Run/Container Apps
-- Kubernetes: EKS/GKE/AKS — clusters, workloads, services, Helm
-- Serverless: Lambda/Cloud Functions/Azure Functions — triggers, monitoring
-- Batch/HPC: AWS Batch, GCP Batch, Azure Batch
-
-### 2. Storage (`/dashboard/storage`)
-- Object: S3/GCS/Azure Blob — buckets, lifecycle, replication
-- File: EFS/Filestore/Azure Files
-- Block: EBS/Persistent Disk/Managed Disks
-- Archive: Glacier/GCS Archive/Azure Archive
-- Backup: AWS Backup/GCP Backup/Azure Backup
-
-### 3. Networking (`/dashboard/networking`)
-- VPC: VPC/VNet — visual topology (D3.js), subnets, route tables, peering
-- Load Balancers: ALB/NLB/Cloud LB/Azure LB
-- DNS: Route53/Cloud DNS/Azure DNS
-- CDN: CloudFront/Cloud CDN/Azure Front Door
-- Firewall/WAF: Security Groups/Firewall Rules/NSGs, WAF rules
-- VPN/Connectivity: Site-to-Site, Direct Connect/Interconnect/ExpressRoute
-
-### 4. Databases (`/dashboard/databases`)
-- Relational: RDS/Cloud SQL/Azure SQL — managed & serverless
-- NoSQL: DynamoDB/Firestore/CosmosDB (document, key-value, graph)
-- In-Memory: ElastiCache/Memorystore/Azure Cache
-- Warehouse: Redshift/BigQuery/Synapse
-- Distributed: Spanner/CockroachDB/CosmosDB distributed
-
-### 5. AI/ML (`/dashboard/ai-ml`)
-- Foundation Models: Bedrock/Vertex AI/Azure OpenAI playground
-- Training: SageMaker/Vertex Training/Azure ML
-- MLOps: Pipelines, experiments, model registry, feature store
-- AI Services: Vision, Language, Speech, Translation, Document AI
-- GenAI: LLM playground, RAG builder, Agent builder
-
-### 6. Security & IAM (`/dashboard/security`)
-- IAM: Users, roles, policies, service accounts, SSO, MFA
-- Secrets: Secrets Manager/Secret Manager/Key Vault
-- Certificates: ACM/Certificate Manager/App Service Certs
-- Threat Detection: GuardDuty/SCC/Microsoft Defender
-- Audit: CloudTrail/Audit Logs/Activity Log
-- Encryption: KMS management across providers
-
-### 7. Security Testing (`/dashboard/security-testing`)
-- VAPT: Configure scans, view findings with CVSS scores, AI remediation
-- Vulnerability Scanner: Cloud-native (Inspector/SCC/Defender) + Trivy
-- DDoS Testing: Controlled tests with authorization, kill switch, audit trail
-- Penetration Testing: OWASP ZAP + Nuclei automated, guided manual checklists
-- Compliance: SOC2, ISO 27001, HIPAA, PCI-DSS 4.0, GDPR, NIST CSF, CIS
-- Security Posture: Score (0-100), CIS benchmarks, drift detection
-
-### 8. Monitoring & Logging (`/dashboard/monitoring`)
-- Dashboards: Unified custom dashboards
-- Metrics: CloudWatch/Cloud Monitoring/Azure Monitor
-- Logs: Explorer with query builder, live streaming (WebSocket)
-- Alerts: Unified rules, multi-channel (SNS/Slack/PagerDuty)
-- Tracing: X-Ray/Cloud Trace/App Insights
-- Uptime: Health checks, synthetic monitoring
-
-### 9. CI/CD & DevOps (`/dashboard/devops`)
-- Pipelines: CodePipeline/Cloud Build/Azure Pipelines
-- IaC: Terraform/CloudFormation/Bicep/Pulumi workspace management
-- GitOps: ArgoCD/Flux integration
-- Deployment: Blue/green, canary, rolling strategies
-- Config Management: Systems Manager/OS Config/Azure Automation
-
-### 10. Data Engineering (`/dashboard/data-engineering`)
-- ETL Pipelines: Glue/Dataflow/Data Factory
-- Streaming: Kinesis/Pub/Sub/Event Hubs, Kafka (MSK/Confluent)
-- Data Lake: Lake Formation/BigLake/ADLS Gen2, catalogs, governance
-- Integration: API Gateway/Apigee/Azure APIM, messaging, events
-
-### 11. Cost Management (`/dashboard/cost`)
-- Overview: Unified multi-cloud cost dashboard
-- Explorer: Breakdown by service/region/tag/team
-- Budgets: Creation and alerting
-- Recommendations: AI-powered optimization (Claude)
-- Reservations: RI/CUD management, savings plans
-- Forecasting: ML-based cost prediction
-- Waste Detection: Unused resources, oversized instances
-
-### 12. IoT (`/dashboard/iot`)
-- Devices: IoT Core (AWS/GCP), Azure IoT Hub
-- Digital Twins: Device shadows, Azure Digital Twins
-- Rules & Routing: Event rules, message routing
-- Edge: Greengrass/Edge TPU/Azure IoT Edge
-
-### 13. Analytics & BI (`/dashboard/analytics`)
-- Query Engines: Athena/BigQuery/Synapse with Monaco editor
-- Visualization: QuickSight/Looker/Power BI embedding
-- Search: OpenSearch/Elasticsearch integration
-- Reports: Scheduled report generation
+## Task 8: Implement 9 missing AWS SDK trait implementations [H4]
+- **File**: `services/cloud-service/src/providers/aws_sdk.rs`
+- **Action**: Add 9 trait impls (51 methods) for IAM, DNS, WAF, Messaging, KMS, AutoScaling, Volume, ML, IoT using real AWS SDK crates (all already in Cargo.toml)
+- **Details**:
+  - Added 9 client helper methods (iam_client, route53_client, wafv2_client, sqs_client, sns_client, kms_real_client, autoscaling_client, iot_client, sagemaker_client)
+  - IAM → aws-sdk-iam (9 methods: users, roles, policies, attach/detach)
+  - DNS → aws-sdk-route53 (4 methods: hosted zones, records, create/delete via ChangeBatch)
+  - WAF → aws-sdk-wafv2 (5 methods: web ACLs with Regional scope, rules, create with VisibilityConfig)
+  - Messaging → aws-sdk-sqs + aws-sdk-sns (7 methods: queues with FIFO support, topics)
+  - KMS → aws-sdk-kms (5 methods: keys with describe, create with key spec, enable/disable, schedule deletion)
+  - AutoScaling → aws-sdk-autoscaling (5 methods: groups, create, delete with force, set desired capacity)
+  - Volume → aws-sdk-ec2 (6 methods: EBS volumes, attach/detach, snapshots)
+  - ML → aws-sdk-sagemaker (5 methods: models, endpoints with config, training jobs)
+  - IoT → aws-sdk-iot (5 methods: things with attributes, thing groups)
+- **Also updated**: `services/cloud-service/src/providers/mod.rs` — all 9 factory functions now route AWS→AwsSdkProvider (+ IoT and ML factories updated too)
+- **Result**: `cargo check` — 0 errors. `cargo test` — 27 passed, 3 pre-existing failures. AWS now implements all 22 traits, matching GCP/Azure parity.
+- **Status**: [x] DONE
 
 ---
 
-## Claude AI Integration (`/dashboard/ai`)
+## Task 9: Implement GCP networking stubs (H1) — 21 methods
+- **File**: `services/cloud-service/src/providers/gcp_sdk.rs` (lines 430-507 replaced)
+- **Mapper file**: `services/cloud-service/src/providers/gcp_mapper.rs` (5 new mapper functions added)
+- **Action**: Replaced 21 stub methods with real GCP REST API implementations
+- **Details**:
+  - **Elastic IPs → Compute Addresses** (5 methods): list/allocate/associate/disassociate/release regional static external IPs via `compute/v1/projects/{project}/regions/{region}/addresses`
+  - **NAT Gateways → Cloud NAT** (3 methods): list/create/delete Cloud NAT configs within Cloud Routers via `compute/v1/projects/{project}/regions/{region}/routers`
+  - **Internet Gateways → Default Routes** (5 methods): GCP has implicit internet via `default-internet-gateway`. List routes with nextHopGateway containing "default-internet-gateway". Create/delete are route operations. Attach/detach are no-ops (routes are VPC-level).
+  - **Route Tables → VPC Routes** (6 methods): GCP has no route table entity. Routes are VPC-level at `compute/v1/projects/{project}/global/routes`. create_route_table creates a placeholder route. associate_route_table returns synthetic ID (routes auto-associate via network/tags).
+  - **Security Group CRUD → Firewall Rules** (4 methods): create/add_rule/remove_rule/delete via `compute/v1/projects/{project}/global/firewalls`
+  - **VPC Peering → Network Peering** (3 methods): list from networks' peerings array, create via `addPeering`, delete via `removePeering`. accept_vpc_peering is no-op (GCP auto-activates mutual peering).
+- **New mapper functions**: `address_to_resource`, `cloud_nat_to_resource`, `route_to_resource`, `internet_gw_route_to_resource`, `network_peering_to_resource`
+- **Status**: [x] DONE
 
-| Feature | Location | Function |
-|---|---|---|
-| CLI Terminal | /ai/terminal | xterm.js terminal with Claude CLI, WebSocket PTY |
-| Chat Assistant | /ai/chat | Streaming chat with context-aware suggestions |
-| Cost Optimizer | Cost module sidebar | Rightsizing, RI recommendations, waste detection |
-| Architecture Reviewer | Resource creation flows | Best practice validation |
-| Security Advisor | Security scan results | Vulnerability explanation + remediation code |
-| IaC Generator | DevOps module | Natural language to Terraform/CloudFormation/Bicep |
-| Policy Generator | IAM module | Least-privilege policy generation |
-| Query Assistant | Database/Analytics | Natural language to SQL/KQL |
-| Tutorial Tutor | Learn module | Adaptive Q&A during tutorials |
-
-**Backend Architecture:**
-- Streaming SSE endpoint for chat (`POST /api/v1/ai/chat`)
-- WebSocket for terminal PTY (`WS /ws/ai/terminal`)
-- Context builders: resource, cost, security contexts injected per request
-- Tool definitions for Claude function calling (cloud APIs, IaC tools, queries)
-
----
-
-## Tutorial & Learning System (`/dashboard/learn`)
-
-### Learning Paths (by role)
-- **Cloud Architect:** Multi-cloud fundamentals → Network architecture → HA/DR → Cost optimization → Security architecture → Well-Architected
-- **DevOps Engineer:** CI/CD → IaC (Terraform) → Containers/K8s → GitOps → Monitoring → Incident management
-- **Data Engineer:** Cloud storage → Warehouses → ETL pipelines → Streaming → Data lakes → Governance
-- **System Admin:** Account setup → IAM → Compute management → Backup/Recovery → Patch management → Automation
-- **Network Admin:** Cloud networking → VPC design → Load balancing → DNS → VPN/Connectivity → Zero-trust
-
-### Tutorial Player
-- Step-by-step interactive cards (Markdown + code blocks + diagrams)
-- "Try it now" sandbox integration (LocalStack/GCP emulators/Azurite)
-- Claude AI tutor floating widget
-- Progress checkpoints with verification
-- Knowledge quizzes between sections
-- Certification prep modules
-
----
-
-## Authentication & RBAC
-
-### Auth Flow
-1. Login (credentials or OAuth: Google/GitHub/Microsoft)
-2. MFA verification (TOTP/WebAuthn)
-3. JWT access token (15min) + HTTP-only refresh cookie (7d)
-4. Gateway validates JWT on every request
-5. Cloud credentials stored in Vault (AWS STS AssumeRole, GCP Workload Identity, Azure SP)
-
-### Role Permissions Matrix
-
-| Module | Cloud Architect | DevOps | Data Engineer | System Admin | Network Admin |
-|---|---|---|---|---|---|
-| Compute | Full | Full | Read | Full | Read |
-| Storage | Full | R/W | Full | Full | Read |
-| Networking | Full | Read | Read | R/W | Full |
-| Database | Full | Read | Full | Full | Read |
-| AI/ML | Full | Read | Full | Read | - |
-| Security | Full | R/W | Read | Full | R/W |
-| Sec Testing | Full | Read | Read | Full | R/W |
-| Cost | Full | Read | Read | Full | Read |
-| CI/CD | R/W | Full | R/W | R/W | Read |
-| Data Eng | Read | R/W | Full | Read | Read |
-| IAM | Full | Read | Read | Full | R/W |
-| Tutorials | Full | Full | Full | Full | Full |
-| AI Assistant | Full | Full | Full | Full | Full |
-
----
-
-## API Design
-
-### REST Pattern
-```
-/api/v1/auth/{action}
-/api/v1/cloud/{provider}/{service}/{resource}
-/api/v1/cloud/{provider}/{service}/{resource}/{id}
-/api/v1/cloud/{provider}/{service}/{resource}/{id}/actions/{action}
-/api/v1/resources?type={type}&providers={csv}
-/api/v1/security/scans
-/api/v1/security/compliance/{framework}
-/api/v1/security/posture/score
-/api/v1/ai/chat (SSE streaming)
-/api/v1/learn/paths, /tutorials, /progress
-/api/v1/cost/overview, /explorer, /recommendations
-```
-
-### WebSocket Endpoints
-```
-/ws/logs/{resource-id}
-/ws/deployments/{id}
-/ws/scans/{id}
-/ws/ai/terminal
-/ws/notifications
-```
-
----
-
-## Implementation Phases
-
-### Phase 1: Foundation (~80 files)
-1. Monorepo setup (Turborepo, package.json, turbo.json)
-2. Next.js app with App Router, Tailwind, shadcn/ui
-3. Dashboard layout (sidebar, topbar, cloud context switcher)
-4. Auth pages (login, register, forgot password)
-5. Auth service (JWT, RBAC)
-6. API gateway skeleton
-7. Cloud context Zustand store
-8. Role-based navigation
-
-### Phase 2: Core Cloud Modules (~120 files)
-9. Compute module (instances CRUD for AWS/GCP/Azure)
-10. Storage module (object storage CRUD)
-11. Networking module (VPC management + visual topology)
-12. Database module (managed databases CRUD)
-13. Cloud service backend with provider trait pattern
-
-### Phase 3: Operations Modules (~80 files)
-14. Monitoring & Logging module
-15. CI/CD & DevOps module (pipelines + IaC)
-16. Cost Management module (overview + explorer + budgets)
-17. Cost service backend
-
-### Phase 4: AI Integration (~40 files)
-18. Claude AI chat interface (streaming)
-19. Claude CLI terminal (xterm.js + WebSocket)
-20. Cost optimization AI suggestions
-21. IaC generation from natural language
-22. Claude AI service backend
-
-### Phase 5: Security & Compliance (~60 files)
-23. Security & IAM module
-24. VAPT scanning interface
-25. Vulnerability scanner integration
-26. Compliance framework dashboards (SOC2, ISO27001, HIPAA, PCI-DSS, GDPR)
-27. Security posture scoring
-28. DDoS testing (with safeguards)
-29. Security service backend
-
-### Phase 6: Learning & Advanced (~60 files)
-30. Tutorial system (paths, player, progress)
-31. Sandbox environment integration
-32. AI/ML module
-33. Data Engineering module
-34. IoT module
-35. Analytics & BI module
-36. Tutorial service backend
-
-### Phase 7: Polish (~30 files)
-37. Settings pages (profile, org, cloud accounts)
-38. Notification system
-39. Command palette (Cmd+K)
-40. Responsive design polish
-41. Dark/light theme
-42. Docker & K8s deployment configs
-
----
-
-## Key Design Decisions
-
-1. **Trait-based cloud abstraction (Rust):** Each cloud service category (compute, storage, etc.) has a trait. AWS/GCP/Azure adapters implement it. Adding providers is mechanical.
-
-2. **Next.js App Router with route groups:** `(auth)` and `(dashboard)` groups share different layouts. Each module is a folder under `(dashboard)`.
-
-3. **Zustand for cloud context:** The active provider/region/account is global state that drives every API call and UI element.
-
-4. **Monaco Editor for code:** Used in IaC editing, query writing, and policy editing — consistent code editing experience.
-
-5. **xterm.js for Claude CLI:** Full terminal emulator connected to server-side PTY for real Claude CLI experience.
-
-6. **DDoS testing safeguards:** Authorization required, kill switch, duration limits, audit trail — designed for compliance testing, not attack simulation.
+## Task 10: Implement Azure networking stubs (H2) — 21 methods
+- **File**: `services/cloud-service/src/providers/azure_sdk.rs` (lines 524-601 replaced)
+- **Mapper file**: `services/cloud-service/src/providers/azure_mapper.rs` (4 new mapper functions added)
+- **Action**: Replaced 21 stub methods with real Azure REST API implementations
+- **Details**:
+  - **Elastic IPs → Public IP Addresses** (5 methods): list/allocate/associate/disassociate/release via `Microsoft.Network/publicIPAddresses`. Associate updates VM's NIC ipConfiguration.
+  - **NAT Gateways → Azure NAT Gateway** (3 methods): list/create/delete via `Microsoft.Network/natGateways` (first-class resource with Standard SKU)
+  - **Internet Gateways → Route Tables with Internet next hop** (5 methods): Azure has no IGW. Maps to route tables containing `0.0.0.0/0 → Internet` routes. Attach/detach update subnet's routeTable property.
+  - **Route Tables → Azure Route Tables** (6 methods): First-class resources via `Microsoft.Network/routeTables`. Routes are sub-resources. Associate updates subnet.
+  - **Security Group CRUD → NSGs** (4 methods): create/add_rule/remove_rule/delete via `Microsoft.Network/networkSecurityGroups`. Rules are sub-resources with priority, direction, protocol.
+  - **VPC Peering → VNet Peering** (4 methods): list by iterating VNets' peerings, create via `virtualNetworkPeerings` sub-resource. accept_vpc_peering is no-op (Azure auto-accepts mutual peering).
+- **New mapper functions**: `public_ip_to_resource`, `nat_gateway_to_resource`, `route_table_to_resource`, `vnet_peering_to_resource`
+- **Result**: `cargo check` — 0 errors. `cargo test` — 27 passed, 3 pre-existing failures. Same baseline.
+- **Status**: [x] DONE

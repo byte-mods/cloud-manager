@@ -427,83 +427,430 @@ impl NetworkingProvider for GcpSdkProvider {
             .collect())
     }
 
-    // GCP stubs for new networking operations
+    // --- Elastic IPs → GCP Compute Addresses (regional static external IPs) ---
 
-    async fn list_elastic_ips(&self, _region: &str) -> Result<Vec<CloudResource>> { Ok(Vec::new()) }
-    async fn allocate_elastic_ip(&self, _region: &str) -> Result<CloudResource> {
-        Err(CloudError::ProviderError("GCP: allocate_elastic_ip not yet implemented for SDK mode".into()))
-    }
-    async fn associate_elastic_ip(&self, _region: &str, _eip_id: &str, _instance_id: &str) -> Result<()> {
-        Err(CloudError::ProviderError("GCP: associate_elastic_ip not yet implemented for SDK mode".into()))
-    }
-    async fn disassociate_elastic_ip(&self, _region: &str, _association_id: &str) -> Result<()> {
-        Err(CloudError::ProviderError("GCP: disassociate_elastic_ip not yet implemented for SDK mode".into()))
-    }
-    async fn release_elastic_ip(&self, _region: &str, _allocation_id: &str) -> Result<()> {
-        Err(CloudError::ProviderError("GCP: release_elastic_ip not yet implemented for SDK mode".into()))
+    async fn list_elastic_ips(&self, region: &str) -> Result<Vec<CloudResource>> {
+        let url = format!(
+            "https://compute.googleapis.com/compute/v1/projects/{}/regions/{}/addresses",
+            self.client.project_id(), region
+        );
+        let data = self.client.get(&url).await?;
+        Ok(data["items"].as_array().unwrap_or(&vec![]).iter()
+            .map(|addr| gcp_mapper::address_to_resource(addr, region))
+            .collect())
     }
 
-    async fn list_nat_gateways(&self, _region: &str) -> Result<Vec<CloudResource>> { Ok(Vec::new()) }
-    async fn create_nat_gateway(&self, _region: &str, _subnet_id: &str, _eip_allocation_id: &str) -> Result<CloudResource> {
-        Err(CloudError::ProviderError("GCP: create_nat_gateway not yet implemented for SDK mode".into()))
-    }
-    async fn delete_nat_gateway(&self, _region: &str, _id: &str) -> Result<()> {
-        Err(CloudError::ProviderError("GCP: delete_nat_gateway not yet implemented for SDK mode".into()))
+    async fn allocate_elastic_ip(&self, region: &str) -> Result<CloudResource> {
+        let name = format!("addr-{}", uuid::Uuid::new_v4().to_string().split('-').next().unwrap_or("x"));
+        let url = format!(
+            "https://compute.googleapis.com/compute/v1/projects/{}/regions/{}/addresses",
+            self.client.project_id(), region
+        );
+        let body = serde_json::json!({
+            "name": name,
+            "addressType": "EXTERNAL",
+            "networkTier": "PREMIUM",
+        });
+        let _op = self.client.post(&url, &body).await?;
+        // Fetch the created address
+        let get_url = format!("{}/{}", url, name);
+        let data = self.client.get(&get_url).await?;
+        Ok(gcp_mapper::address_to_resource(&data, region))
     }
 
-    async fn list_internet_gateways(&self, _region: &str) -> Result<Vec<CloudResource>> { Ok(Vec::new()) }
+    async fn associate_elastic_ip(&self, region: &str, eip_id: &str, instance_id: &str) -> Result<()> {
+        // GCP: add an access config with the static IP to the instance's NIC
+        let zones = self.client.zones_in_region(region).await?;
+        let zone = zones.first().ok_or_else(|| CloudError::ProviderError(format!("No zones in region {}", region)))?;
+        // Get the address value
+        let addr_url = format!(
+            "https://compute.googleapis.com/compute/v1/projects/{}/regions/{}/addresses/{}",
+            self.client.project_id(), region, eip_id
+        );
+        let addr_data = self.client.get(&addr_url).await?;
+        let ip = addr_data["address"].as_str().unwrap_or_default();
+        let url = format!(
+            "https://compute.googleapis.com/compute/v1/projects/{}/zones/{}/instances/{}/addAccessConfig?networkInterface=nic0",
+            self.client.project_id(), zone, instance_id
+        );
+        let body = serde_json::json!({
+            "type": "ONE_TO_ONE_NAT",
+            "name": "External NAT",
+            "natIP": ip,
+        });
+        self.client.post(&url, &body).await?;
+        Ok(())
+    }
+
+    async fn disassociate_elastic_ip(&self, _region: &str, association_id: &str) -> Result<()> {
+        // association_id expected as "zone/instance-name" for GCP
+        let parts: Vec<&str> = association_id.splitn(2, '/').collect();
+        if parts.len() != 2 {
+            return Err(CloudError::BadRequest("Expected association_id as 'zone/instance-name'".into()));
+        }
+        let url = format!(
+            "https://compute.googleapis.com/compute/v1/projects/{}/zones/{}/instances/{}/deleteAccessConfig?accessConfig=External%20NAT&networkInterface=nic0",
+            self.client.project_id(), parts[0], parts[1]
+        );
+        self.client.post(&url, &serde_json::json!({})).await?;
+        Ok(())
+    }
+
+    async fn release_elastic_ip(&self, region: &str, allocation_id: &str) -> Result<()> {
+        let url = format!(
+            "https://compute.googleapis.com/compute/v1/projects/{}/regions/{}/addresses/{}",
+            self.client.project_id(), region, allocation_id
+        );
+        self.client.delete(&url).await
+    }
+
+    // --- NAT Gateways → GCP Cloud NAT (attached to Cloud Routers) ---
+
+    async fn list_nat_gateways(&self, region: &str) -> Result<Vec<CloudResource>> {
+        let url = format!(
+            "https://compute.googleapis.com/compute/v1/projects/{}/regions/{}/routers",
+            self.client.project_id(), region
+        );
+        let data = self.client.get(&url).await?;
+        let mut nats = Vec::new();
+        for router in data["items"].as_array().unwrap_or(&vec![]) {
+            if let Some(nat_configs) = router["nats"].as_array() {
+                for nat in nat_configs {
+                    nats.push(gcp_mapper::cloud_nat_to_resource(router, nat, region));
+                }
+            }
+        }
+        Ok(nats)
+    }
+
+    async fn create_nat_gateway(&self, region: &str, subnet_id: &str, _eip_allocation_id: &str) -> Result<CloudResource> {
+        // Create a Cloud Router with a Cloud NAT config
+        let router_name = format!("router-nat-{}", uuid::Uuid::new_v4().to_string().split('-').next().unwrap_or("x"));
+        let nat_name = format!("nat-{}", uuid::Uuid::new_v4().to_string().split('-').next().unwrap_or("x"));
+        let url = format!(
+            "https://compute.googleapis.com/compute/v1/projects/{}/regions/{}/routers",
+            self.client.project_id(), region
+        );
+        let body = serde_json::json!({
+            "name": router_name,
+            "network": subnet_id, // In GCP, this should be the network self-link
+            "nats": [{
+                "name": nat_name,
+                "natIpAllocateOption": "AUTO_ONLY",
+                "sourceSubnetworkIpRangesToNat": "ALL_SUBNETWORKS_ALL_IP_RANGES",
+            }]
+        });
+        let _op = self.client.post(&url, &body).await?;
+        let get_url = format!("{}/{}", url, router_name);
+        let router_data = self.client.get(&get_url).await?;
+        let nat_data = router_data["nats"].as_array()
+            .and_then(|a| a.first())
+            .cloned()
+            .unwrap_or(serde_json::json!({"name": nat_name}));
+        Ok(gcp_mapper::cloud_nat_to_resource(&router_data, &nat_data, region))
+    }
+
+    async fn delete_nat_gateway(&self, region: &str, id: &str) -> Result<()> {
+        // id is expected as "router-name/nat-name"
+        let parts: Vec<&str> = id.splitn(2, '/').collect();
+        if parts.len() != 2 {
+            return Err(CloudError::BadRequest("Expected NAT id as 'router-name/nat-name'".into()));
+        }
+        let router_name = parts[0];
+        let nat_name = parts[1];
+        // Get current router config
+        let url = format!(
+            "https://compute.googleapis.com/compute/v1/projects/{}/regions/{}/routers/{}",
+            self.client.project_id(), region, router_name
+        );
+        let mut router_data = self.client.get(&url).await?;
+        // Remove the NAT config
+        if let Some(nats) = router_data["nats"].as_array() {
+            let filtered: Vec<_> = nats.iter()
+                .filter(|n| n["name"].as_str().unwrap_or_default() != nat_name)
+                .cloned()
+                .collect();
+            router_data["nats"] = serde_json::Value::Array(filtered);
+        }
+        // PATCH the router to remove the NAT
+        self.client.post(&format!("{url}?updateMask=nats"), &router_data).await?;
+        Ok(())
+    }
+
+    // --- Internet Gateways → GCP implicit internet via default routes ---
+    // GCP VPCs have implicit internet connectivity through default routes
+    // pointing to the default-internet-gateway. We map to routes with
+    // nextHopGateway == "default-internet-gateway".
+
+    async fn list_internet_gateways(&self, _region: &str) -> Result<Vec<CloudResource>> {
+        let url = format!(
+            "https://compute.googleapis.com/compute/v1/projects/{}/global/routes",
+            self.client.project_id()
+        );
+        let data = self.client.get(&url).await?;
+        Ok(data["items"].as_array().unwrap_or(&vec![]).iter()
+            .filter(|r| {
+                r["nextHopGateway"].as_str()
+                    .map(|s| s.contains("default-internet-gateway"))
+                    .unwrap_or(false)
+            })
+            .map(|r| gcp_mapper::internet_gw_route_to_resource(r, "global"))
+            .collect())
+    }
+
     async fn create_internet_gateway(&self, _region: &str) -> Result<CloudResource> {
-        Err(CloudError::ProviderError("GCP: create_internet_gateway not yet implemented for SDK mode".into()))
+        // Create a route to 0.0.0.0/0 via default-internet-gateway
+        let name = format!("igw-route-{}", uuid::Uuid::new_v4().to_string().split('-').next().unwrap_or("x"));
+        let url = format!(
+            "https://compute.googleapis.com/compute/v1/projects/{}/global/routes",
+            self.client.project_id()
+        );
+        let body = serde_json::json!({
+            "name": name,
+            "destRange": "0.0.0.0/0",
+            "nextHopGateway": format!("projects/{}/global/gateways/default-internet-gateway", self.client.project_id()),
+            "priority": 1000,
+        });
+        let _op = self.client.post(&url, &body).await?;
+        let get_url = format!("{}/{}", url, name);
+        let data = self.client.get(&get_url).await?;
+        Ok(gcp_mapper::internet_gw_route_to_resource(&data, "global"))
     }
+
     async fn attach_internet_gateway(&self, _region: &str, _igw_id: &str, _vpc_id: &str) -> Result<()> {
-        Err(CloudError::ProviderError("GCP: attach_internet_gateway not yet implemented for SDK mode".into()))
+        // GCP: Internet connectivity is implicit per-VPC via routes. No attach needed.
+        // The route's network field already associates it with a VPC.
+        Ok(())
     }
+
     async fn detach_internet_gateway(&self, _region: &str, _igw_id: &str, _vpc_id: &str) -> Result<()> {
-        Err(CloudError::ProviderError("GCP: detach_internet_gateway not yet implemented for SDK mode".into()))
-    }
-    async fn delete_internet_gateway(&self, _region: &str, _id: &str) -> Result<()> {
-        Err(CloudError::ProviderError("GCP: delete_internet_gateway not yet implemented for SDK mode".into()))
+        // GCP: No explicit detach. Delete the route to remove internet access.
+        Ok(())
     }
 
-    async fn list_route_tables(&self, _region: &str) -> Result<Vec<CloudResource>> { Ok(Vec::new()) }
-    async fn create_route_table(&self, _region: &str, _vpc_id: &str) -> Result<CloudResource> {
-        Err(CloudError::ProviderError("GCP: create_route_table not yet implemented for SDK mode".into()))
+    async fn delete_internet_gateway(&self, _region: &str, id: &str) -> Result<()> {
+        let url = format!(
+            "https://compute.googleapis.com/compute/v1/projects/{}/global/routes/{}",
+            self.client.project_id(), id
+        );
+        self.client.delete(&url).await
     }
-    async fn add_route(&self, _region: &str, _route_table_id: &str, _destination_cidr: &str, _target_id: &str) -> Result<()> {
-        Err(CloudError::ProviderError("GCP: add_route not yet implemented for SDK mode".into()))
+
+    // --- Route Tables → GCP routes (VPC-level, no separate table entity) ---
+    // GCP doesn't have route tables. Routes are VPC-level and applied via tags.
+    // We list all routes and treat them as a flat "table".
+
+    async fn list_route_tables(&self, _region: &str) -> Result<Vec<CloudResource>> {
+        let url = format!(
+            "https://compute.googleapis.com/compute/v1/projects/{}/global/routes",
+            self.client.project_id()
+        );
+        let data = self.client.get(&url).await?;
+        Ok(data["items"].as_array().unwrap_or(&vec![]).iter()
+            .map(|r| gcp_mapper::route_to_resource(r, "global"))
+            .collect())
     }
-    async fn delete_route(&self, _region: &str, _route_table_id: &str, _destination_cidr: &str) -> Result<()> {
-        Err(CloudError::ProviderError("GCP: delete_route not yet implemented for SDK mode".into()))
+
+    async fn create_route_table(&self, _region: &str, vpc_id: &str) -> Result<CloudResource> {
+        // GCP has no route table entity. We create a placeholder route in the VPC.
+        let name = format!("rt-{}", uuid::Uuid::new_v4().to_string().split('-').next().unwrap_or("x"));
+        let url = format!(
+            "https://compute.googleapis.com/compute/v1/projects/{}/global/routes",
+            self.client.project_id()
+        );
+        let body = serde_json::json!({
+            "name": name,
+            "network": vpc_id,
+            "destRange": "10.0.0.0/8",
+            "nextHopNetwork": vpc_id,
+            "priority": 1000,
+            "description": "Route table placeholder created by Cloud Manager",
+        });
+        let _op = self.client.post(&url, &body).await?;
+        let get_url = format!("{}/{}", url, name);
+        let data = self.client.get(&get_url).await?;
+        Ok(gcp_mapper::route_to_resource(&data, "global"))
     }
+
+    async fn add_route(&self, _region: &str, _route_table_id: &str, destination_cidr: &str, target_id: &str) -> Result<()> {
+        let name = format!("route-{}", uuid::Uuid::new_v4().to_string().split('-').next().unwrap_or("x"));
+        let url = format!(
+            "https://compute.googleapis.com/compute/v1/projects/{}/global/routes",
+            self.client.project_id()
+        );
+        let body = serde_json::json!({
+            "name": name,
+            "destRange": destination_cidr,
+            "nextHopIp": target_id,
+            "priority": 1000,
+        });
+        self.client.post(&url, &body).await?;
+        Ok(())
+    }
+
+    async fn delete_route(&self, _region: &str, _route_table_id: &str, destination_cidr: &str) -> Result<()> {
+        // In GCP, routes are identified by name. destination_cidr is used as the route name/id here.
+        let url = format!(
+            "https://compute.googleapis.com/compute/v1/projects/{}/global/routes/{}",
+            self.client.project_id(), destination_cidr
+        );
+        self.client.delete(&url).await
+    }
+
     async fn associate_route_table(&self, _region: &str, _route_table_id: &str, _subnet_id: &str) -> Result<String> {
-        Err(CloudError::ProviderError("GCP: associate_route_table not yet implemented for SDK mode".into()))
-    }
-    async fn delete_route_table(&self, _region: &str, _id: &str) -> Result<()> {
-        Err(CloudError::ProviderError("GCP: delete_route_table not yet implemented for SDK mode".into()))
-    }
-
-    async fn create_security_group(&self, _region: &str, _name: &str, _description: &str, _vpc_id: &str) -> Result<CloudResource> {
-        Err(CloudError::ProviderError("GCP: create_security_group not yet implemented for SDK mode".into()))
-    }
-    async fn add_security_group_rule(&self, _region: &str, _sg_id: &str, _rule: SecurityGroupRule) -> Result<()> {
-        Err(CloudError::ProviderError("GCP: add_security_group_rule not yet implemented for SDK mode".into()))
-    }
-    async fn remove_security_group_rule(&self, _region: &str, _sg_id: &str, _rule: SecurityGroupRule) -> Result<()> {
-        Err(CloudError::ProviderError("GCP: remove_security_group_rule not yet implemented for SDK mode".into()))
-    }
-    async fn delete_security_group(&self, _region: &str, _id: &str) -> Result<()> {
-        Err(CloudError::ProviderError("GCP: delete_security_group not yet implemented for SDK mode".into()))
+        // GCP routes are associated via network and tags, not explicit association.
+        // Return a synthetic association ID.
+        Ok(format!("{}/{}", _route_table_id, _subnet_id))
     }
 
-    async fn list_vpc_peering_connections(&self, _region: &str) -> Result<Vec<CloudResource>> { Ok(Vec::new()) }
-    async fn create_vpc_peering(&self, _region: &str, _vpc_id: &str, _peer_vpc_id: &str) -> Result<CloudResource> {
-        Err(CloudError::ProviderError("GCP: create_vpc_peering not yet implemented for SDK mode".into()))
+    async fn delete_route_table(&self, _region: &str, id: &str) -> Result<()> {
+        // Delete the route by name
+        let url = format!(
+            "https://compute.googleapis.com/compute/v1/projects/{}/global/routes/{}",
+            self.client.project_id(), id
+        );
+        self.client.delete(&url).await
     }
-    async fn accept_vpc_peering(&self, _region: &str, _peering_id: &str) -> Result<()> {
-        Err(CloudError::ProviderError("GCP: accept_vpc_peering not yet implemented for SDK mode".into()))
+
+    // --- Security Group CRUD → GCP Firewall Rules ---
+
+    async fn create_security_group(&self, _region: &str, name: &str, description: &str, vpc_id: &str) -> Result<CloudResource> {
+        let url = format!(
+            "https://compute.googleapis.com/compute/v1/projects/{}/global/firewalls",
+            self.client.project_id()
+        );
+        let body = serde_json::json!({
+            "name": name,
+            "description": description,
+            "network": vpc_id,
+            "direction": "INGRESS",
+            "priority": 1000,
+            "denied": [{"IPProtocol": "all"}],  // Default-deny rule
+            "sourceRanges": ["0.0.0.0/0"],
+        });
+        let _op = self.client.post(&url, &body).await?;
+        let get_url = format!("{}/{}", url, name);
+        let data = self.client.get(&get_url).await?;
+        Ok(gcp_mapper::firewall_to_resource(&data, "global"))
     }
-    async fn delete_vpc_peering(&self, _region: &str, _peering_id: &str) -> Result<()> {
-        Err(CloudError::ProviderError("GCP: delete_vpc_peering not yet implemented for SDK mode".into()))
+
+    async fn add_security_group_rule(&self, _region: &str, sg_id: &str, rule: SecurityGroupRule) -> Result<()> {
+        // Create a new firewall rule for the same network as the "security group"
+        let rule_name = format!("{}-{}", sg_id, uuid::Uuid::new_v4().to_string().split('-').next().unwrap_or("x"));
+        let url = format!(
+            "https://compute.googleapis.com/compute/v1/projects/{}/global/firewalls",
+            self.client.project_id()
+        );
+        let direction = if rule.direction.to_uppercase() == "INGRESS" { "INGRESS" } else { "EGRESS" };
+        let mut body = serde_json::json!({
+            "name": rule_name,
+            "direction": direction,
+            "priority": 1000,
+            "allowed": [{
+                "IPProtocol": rule.protocol,
+                "ports": [format!("{}-{}", rule.from_port, rule.to_port)],
+            }],
+        });
+        if direction == "INGRESS" {
+            body["sourceRanges"] = serde_json::json!([rule.cidr]);
+        } else {
+            body["destinationRanges"] = serde_json::json!([rule.cidr]);
+        }
+        self.client.post(&url, &body).await?;
+        Ok(())
+    }
+
+    async fn remove_security_group_rule(&self, _region: &str, _sg_id: &str, rule: SecurityGroupRule) -> Result<()> {
+        // In GCP, each firewall rule is independent. The rule description/name must identify it.
+        // Use the rule description as the firewall rule name to delete.
+        let rule_id = rule.description.unwrap_or_default();
+        if rule_id.is_empty() {
+            return Err(CloudError::BadRequest("Rule description must contain the firewall rule name to delete".into()));
+        }
+        let url = format!(
+            "https://compute.googleapis.com/compute/v1/projects/{}/global/firewalls/{}",
+            self.client.project_id(), rule_id
+        );
+        self.client.delete(&url).await
+    }
+
+    async fn delete_security_group(&self, _region: &str, id: &str) -> Result<()> {
+        let url = format!(
+            "https://compute.googleapis.com/compute/v1/projects/{}/global/firewalls/{}",
+            self.client.project_id(), id
+        );
+        self.client.delete(&url).await
+    }
+
+    // --- VPC Peering → GCP Network Peering ---
+
+    async fn list_vpc_peering_connections(&self, _region: &str) -> Result<Vec<CloudResource>> {
+        let url = format!(
+            "https://compute.googleapis.com/compute/v1/projects/{}/global/networks",
+            self.client.project_id()
+        );
+        let data = self.client.get(&url).await?;
+        let mut peerings = Vec::new();
+        for network in data["items"].as_array().unwrap_or(&vec![]) {
+            let net_name = network["name"].as_str().unwrap_or_default();
+            if let Some(peers) = network["peerings"].as_array() {
+                for peer in peers {
+                    peerings.push(gcp_mapper::network_peering_to_resource(net_name, peer, "global"));
+                }
+            }
+        }
+        Ok(peerings)
+    }
+
+    async fn create_vpc_peering(&self, _region: &str, vpc_id: &str, peer_vpc_id: &str) -> Result<CloudResource> {
+        let peering_name = format!("peer-{}", uuid::Uuid::new_v4().to_string().split('-').next().unwrap_or("x"));
+        let url = format!(
+            "https://compute.googleapis.com/compute/v1/projects/{}/global/networks/{}/addPeering",
+            self.client.project_id(), vpc_id
+        );
+        let body = serde_json::json!({
+            "networkPeering": {
+                "name": peering_name,
+                "network": peer_vpc_id,
+                "exchangeSubnetRoutes": true,
+                "autoCreateRoutes": true,
+            }
+        });
+        self.client.post(&url, &body).await?;
+        // Fetch the network to get peering details
+        let net_url = format!(
+            "https://compute.googleapis.com/compute/v1/projects/{}/global/networks/{}",
+            self.client.project_id(), vpc_id
+        );
+        let net_data = self.client.get(&net_url).await?;
+        let peering = net_data["peerings"].as_array()
+            .and_then(|a| a.iter().find(|p| p["name"].as_str() == Some(&peering_name)))
+            .cloned()
+            .unwrap_or(serde_json::json!({"name": peering_name, "network": peer_vpc_id, "state": "INACTIVE"}));
+        Ok(gcp_mapper::network_peering_to_resource(vpc_id, &peering, "global"))
+    }
+
+    async fn accept_vpc_peering(&self, _region: &str, peering_id: &str) -> Result<()> {
+        // GCP peering is mutual — both sides must add peering. There's no explicit "accept".
+        // If the caller is the peer side, they should call create_vpc_peering in reverse.
+        // This is a no-op since GCP auto-activates when both sides have peering.
+        let _ = peering_id;
+        Ok(())
+    }
+
+    async fn delete_vpc_peering(&self, _region: &str, peering_id: &str) -> Result<()> {
+        // peering_id expected as "network-name/peering-name"
+        let parts: Vec<&str> = peering_id.splitn(2, '/').collect();
+        if parts.len() != 2 {
+            return Err(CloudError::BadRequest("Expected peering_id as 'network-name/peering-name'".into()));
+        }
+        let url = format!(
+            "https://compute.googleapis.com/compute/v1/projects/{}/global/networks/{}/removePeering",
+            self.client.project_id(), parts[0]
+        );
+        let body = serde_json::json!({ "name": parts[1] });
+        self.client.post(&url, &body).await?;
+        Ok(())
     }
 }
 

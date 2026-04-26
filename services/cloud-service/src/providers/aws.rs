@@ -8,7 +8,7 @@ use crate::error::CloudError;
 use crate::models::*;
 use crate::providers::store::InMemoryStore;
 use crate::traits::compute::Result;
-use crate::traits::{ApiGatewayProvider, CacheDbProvider, CdnProvider, ComputeProvider, ContainerRegistryProvider, DatabaseProvider, IoTProvider, KubernetesProvider, MlProvider, NetworkingProvider, NoSqlProvider, ServerlessProvider, StorageProvider, TrafficProvider, WorkflowProvider};
+use crate::traits::{ApiGatewayProvider, AutoScalingProvider, CacheDbProvider, CdnProvider, ComputeProvider, ContainerRegistryProvider, DatabaseProvider, DnsProvider, IamProvider, IoTProvider, KmsProvider, KubernetesProvider, MessagingProvider, MlProvider, NetworkingProvider, NoSqlProvider, ServerlessProvider, StorageProvider, TrafficProvider, VolumeProvider, WafProvider, WorkflowProvider};
 
 /// AWS cloud provider backed by InMemoryStore.
 pub struct AwsProvider {
@@ -1475,5 +1475,425 @@ impl WorkflowProvider for AwsProvider {
 
     async fn list_executions(&self, region: &str, _arn: &str) -> Result<Vec<CloudResource>> {
         Ok(self.store.list(self.provider, Some(region), Some(ResourceType::WorkflowExecution)))
+    }
+}
+
+#[async_trait]
+impl IamProvider for AwsProvider {
+    async fn list_users(&self, region: &str) -> Result<Vec<CloudResource>> {
+        tracing::info!(provider = "aws", region = region, "Listing IAM users (mock)");
+        Ok(self.store.list(self.provider, Some(region), Some(ResourceType::IamUser)))
+    }
+
+    async fn create_user(&self, region: &str, username: &str) -> Result<CloudResource> {
+        tracing::info!(provider = "aws", region = region, username = username, "Creating IAM user (mock)");
+        let resource = self.make_resource(
+            ResourceType::IamUser,
+            username,
+            region,
+            ResourceStatus::Available,
+            serde_json::json!({"username": username, "path": "/"}),
+            HashMap::new(),
+        );
+        self.store.insert(resource.clone());
+        Ok(resource)
+    }
+
+    async fn delete_user(&self, region: &str, username: &str) -> Result<()> {
+        tracing::info!(provider = "aws", region = region, username = username, "Deleting IAM user (mock)");
+        if let Some(r) = self.store.get_by_name(username, self.provider, ResourceType::IamUser) {
+            if self.store.delete(r.id) {
+                return Ok(());
+            }
+        }
+        Err(CloudError::NotFound(format!("IAM user {} not found", username)))
+    }
+
+    async fn list_roles(&self, region: &str) -> Result<Vec<CloudResource>> {
+        tracing::info!(provider = "aws", region = region, "Listing IAM roles (mock)");
+        Ok(self.store.list(self.provider, Some(region), Some(ResourceType::IamRole)))
+    }
+
+    async fn create_role(&self, region: &str, name: &str, trust_policy: &str) -> Result<CloudResource> {
+        tracing::info!(provider = "aws", region = region, name = name, "Creating IAM role (mock)");
+        let resource = self.make_resource(
+            ResourceType::IamRole,
+            name,
+            region,
+            ResourceStatus::Available,
+            serde_json::json!({"role_name": name, "trust_policy": trust_policy}),
+            HashMap::new(),
+        );
+        self.store.insert(resource.clone());
+        Ok(resource)
+    }
+
+    async fn delete_role(&self, region: &str, name: &str) -> Result<()> {
+        tracing::info!(provider = "aws", region = region, name = name, "Deleting IAM role (mock)");
+        if let Some(r) = self.store.get_by_name(name, self.provider, ResourceType::IamRole) {
+            if self.store.delete(r.id) {
+                return Ok(());
+            }
+        }
+        Err(CloudError::NotFound(format!("IAM role {} not found", name)))
+    }
+
+    async fn list_policies(&self, region: &str) -> Result<Vec<CloudResource>> {
+        tracing::info!(provider = "aws", region = region, "Listing IAM policies (mock)");
+        Ok(self.store.list(self.provider, Some(region), Some(ResourceType::IamPolicy)))
+    }
+
+    async fn attach_policy(&self, region: &str, target: &str, policy_arn: &str) -> Result<()> {
+        tracing::info!(provider = "aws", region = region, target = target, policy_arn = policy_arn, "Attaching IAM policy (mock)");
+        Ok(())
+    }
+
+    async fn detach_policy(&self, region: &str, target: &str, policy_arn: &str) -> Result<()> {
+        tracing::info!(provider = "aws", region = region, target = target, policy_arn = policy_arn, "Detaching IAM policy (mock)");
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl DnsProvider for AwsProvider {
+    async fn list_hosted_zones(&self, region: &str) -> Result<Vec<CloudResource>> {
+        tracing::info!(provider = "aws", region = region, "Listing Route 53 hosted zones (mock)");
+        Ok(self.store.list(self.provider, Some(region), Some(ResourceType::DnsZone)))
+    }
+
+    async fn list_records(&self, region: &str, _zone_id: &str) -> Result<Vec<CloudResource>> {
+        tracing::info!(provider = "aws", region = region, "Listing DNS records (mock)");
+        Ok(self.store.list(self.provider, Some(region), Some(ResourceType::DnsRecord)))
+    }
+
+    async fn create_record(&self, region: &str, zone_id: &str, record: DnsRecordInput) -> Result<CloudResource> {
+        tracing::info!(provider = "aws", region = region, zone_id = zone_id, "Creating DNS record (mock)");
+        let resource = self.make_resource(
+            ResourceType::DnsRecord,
+            &record.name,
+            region,
+            ResourceStatus::Available,
+            serde_json::json!({"zone_id": zone_id, "record_type": record.record_type, "values": record.values, "ttl": record.ttl}),
+            HashMap::new(),
+        );
+        self.store.insert(resource.clone());
+        Ok(resource)
+    }
+
+    async fn delete_record(&self, region: &str, zone_id: &str, record: DnsRecordInput) -> Result<()> {
+        tracing::info!(provider = "aws", region = region, zone_id = zone_id, name = record.name.as_str(), "Deleting DNS record (mock)");
+        if let Some(r) = self.store.get_by_name(&record.name, self.provider, ResourceType::DnsRecord) {
+            if self.store.delete(r.id) {
+                return Ok(());
+            }
+        }
+        Err(CloudError::NotFound(format!("DNS record {} not found in zone {}", record.name, zone_id)))
+    }
+}
+
+#[async_trait]
+impl WafProvider for AwsProvider {
+    async fn list_web_acls(&self, region: &str) -> Result<Vec<CloudResource>> {
+        tracing::info!(provider = "aws", region = region, "Listing WAF web ACLs (mock)");
+        Ok(self.store.list(self.provider, Some(region), Some(ResourceType::WafRule)))
+    }
+
+    async fn get_web_acl(&self, region: &str, id: &str) -> Result<CloudResource> {
+        tracing::info!(provider = "aws", region = region, id = id, "Getting WAF web ACL (mock)");
+        let uuid = Uuid::parse_str(id)
+            .map_err(|_| CloudError::BadRequest(format!("Invalid UUID: {}", id)))?;
+        self.store
+            .get(uuid)
+            .filter(|r| r.provider == self.provider && r.resource_type == ResourceType::WafRule)
+            .ok_or_else(|| CloudError::NotFound(format!("WAF web ACL {} not found in {}", id, region)))
+    }
+
+    async fn list_rules(&self, region: &str, _acl_id: &str) -> Result<Vec<CloudResource>> {
+        tracing::info!(provider = "aws", region = region, "Listing WAF rules (mock)");
+        Ok(self.store.list(self.provider, Some(region), Some(ResourceType::WafRule)))
+    }
+
+    async fn create_web_acl(&self, region: &str, name: &str) -> Result<CloudResource> {
+        tracing::info!(provider = "aws", region = region, name = name, "Creating WAF web ACL (mock)");
+        let resource = self.make_resource(
+            ResourceType::WafRule,
+            name,
+            region,
+            ResourceStatus::Available,
+            serde_json::json!({"scope": "REGIONAL", "default_action": "allow"}),
+            HashMap::new(),
+        );
+        self.store.insert(resource.clone());
+        Ok(resource)
+    }
+
+    async fn delete_web_acl(&self, region: &str, id: &str) -> Result<()> {
+        tracing::info!(provider = "aws", region = region, id = id, "Deleting WAF web ACL (mock)");
+        let uuid = Uuid::parse_str(id)
+            .map_err(|_| CloudError::BadRequest(format!("Invalid UUID: {}", id)))?;
+        if self.store.delete(uuid) {
+            Ok(())
+        } else {
+            Err(CloudError::NotFound(format!("WAF web ACL {} not found", id)))
+        }
+    }
+}
+
+#[async_trait]
+impl MessagingProvider for AwsProvider {
+    async fn list_queues(&self, region: &str) -> Result<Vec<CloudResource>> {
+        tracing::info!(provider = "aws", region = region, "Listing SQS queues (mock)");
+        Ok(self.store.list(self.provider, Some(region), Some(ResourceType::Queue)))
+    }
+
+    async fn get_queue(&self, region: &str, id: &str) -> Result<CloudResource> {
+        tracing::info!(provider = "aws", region = region, id = id, "Getting SQS queue (mock)");
+        let uuid = Uuid::parse_str(id)
+            .map_err(|_| CloudError::BadRequest(format!("Invalid UUID: {}", id)))?;
+        self.store
+            .get(uuid)
+            .filter(|r| r.provider == self.provider && r.resource_type == ResourceType::Queue)
+            .ok_or_else(|| CloudError::NotFound(format!("SQS queue {} not found in {}", id, region)))
+    }
+
+    async fn create_queue(&self, region: &str, name: &str, fifo: bool) -> Result<CloudResource> {
+        tracing::info!(provider = "aws", region = region, name = name, fifo = fifo, "Creating SQS queue (mock)");
+        let queue_name = if fifo { format!("{}.fifo", name) } else { name.to_string() };
+        let resource = self.make_resource(
+            ResourceType::Queue,
+            &queue_name,
+            region,
+            ResourceStatus::Available,
+            serde_json::json!({"fifo": fifo, "visibility_timeout": 30, "message_retention": 345600}),
+            HashMap::new(),
+        );
+        self.store.insert(resource.clone());
+        Ok(resource)
+    }
+
+    async fn delete_queue(&self, region: &str, id: &str) -> Result<()> {
+        tracing::info!(provider = "aws", region = region, id = id, "Deleting SQS queue (mock)");
+        let uuid = Uuid::parse_str(id)
+            .map_err(|_| CloudError::BadRequest(format!("Invalid UUID: {}", id)))?;
+        if self.store.delete(uuid) {
+            Ok(())
+        } else {
+            Err(CloudError::NotFound(format!("SQS queue {} not found", id)))
+        }
+    }
+
+    async fn list_topics(&self, region: &str) -> Result<Vec<CloudResource>> {
+        tracing::info!(provider = "aws", region = region, "Listing SNS topics (mock)");
+        Ok(self.store.list(self.provider, Some(region), Some(ResourceType::Topic)))
+    }
+
+    async fn create_topic(&self, region: &str, name: &str) -> Result<CloudResource> {
+        tracing::info!(provider = "aws", region = region, name = name, "Creating SNS topic (mock)");
+        let resource = self.make_resource(
+            ResourceType::Topic,
+            name,
+            region,
+            ResourceStatus::Available,
+            serde_json::json!({"display_name": name, "subscriptions_confirmed": 0}),
+            HashMap::new(),
+        );
+        self.store.insert(resource.clone());
+        Ok(resource)
+    }
+
+    async fn delete_topic(&self, region: &str, id: &str) -> Result<()> {
+        tracing::info!(provider = "aws", region = region, id = id, "Deleting SNS topic (mock)");
+        let uuid = Uuid::parse_str(id)
+            .map_err(|_| CloudError::BadRequest(format!("Invalid UUID: {}", id)))?;
+        if self.store.delete(uuid) {
+            Ok(())
+        } else {
+            Err(CloudError::NotFound(format!("SNS topic {} not found", id)))
+        }
+    }
+}
+
+#[async_trait]
+impl KmsProvider for AwsProvider {
+    async fn list_keys(&self, region: &str) -> Result<Vec<CloudResource>> {
+        tracing::info!(provider = "aws", region = region, "Listing KMS keys (mock)");
+        Ok(self.store.list(self.provider, Some(region), Some(ResourceType::KmsKey)))
+    }
+
+    async fn get_key(&self, region: &str, id: &str) -> Result<CloudResource> {
+        tracing::info!(provider = "aws", region = region, id = id, "Getting KMS key (mock)");
+        let uuid = Uuid::parse_str(id)
+            .map_err(|_| CloudError::BadRequest(format!("Invalid UUID: {}", id)))?;
+        self.store
+            .get(uuid)
+            .filter(|r| r.provider == self.provider && r.resource_type == ResourceType::KmsKey)
+            .ok_or_else(|| CloudError::NotFound(format!("KMS key {} not found in {}", id, region)))
+    }
+
+    async fn create_key(&self, region: &str, name: &str, key_type: &str) -> Result<CloudResource> {
+        tracing::info!(provider = "aws", region = region, name = name, key_type = key_type, "Creating KMS key (mock)");
+        let resource = self.make_resource(
+            ResourceType::KmsKey,
+            name,
+            region,
+            ResourceStatus::Available,
+            serde_json::json!({"key_type": key_type, "key_state": "Enabled", "key_usage": "ENCRYPT_DECRYPT"}),
+            HashMap::new(),
+        );
+        self.store.insert(resource.clone());
+        Ok(resource)
+    }
+
+    async fn schedule_key_deletion(&self, region: &str, id: &str) -> Result<()> {
+        tracing::info!(provider = "aws", region = region, id = id, "Scheduling KMS key deletion (mock)");
+        let uuid = Uuid::parse_str(id)
+            .map_err(|_| CloudError::BadRequest(format!("Invalid UUID: {}", id)))?;
+        if self.store.delete(uuid) {
+            Ok(())
+        } else {
+            Err(CloudError::NotFound(format!("KMS key {} not found", id)))
+        }
+    }
+
+    async fn set_key_enabled(&self, region: &str, id: &str, enabled: bool) -> Result<()> {
+        tracing::info!(provider = "aws", region = region, id = id, enabled = enabled, "Setting KMS key enabled state (mock)");
+        let uuid = Uuid::parse_str(id)
+            .map_err(|_| CloudError::BadRequest(format!("Invalid UUID: {}", id)))?;
+        let status = if enabled { ResourceStatus::Available } else { ResourceStatus::Stopped };
+        if self.store.update_status(uuid, status) {
+            Ok(())
+        } else {
+            Err(CloudError::NotFound(format!("KMS key {} not found", id)))
+        }
+    }
+}
+
+#[async_trait]
+impl AutoScalingProvider for AwsProvider {
+    async fn list_groups(&self, region: &str) -> Result<Vec<CloudResource>> {
+        tracing::info!(provider = "aws", region = region, "Listing Auto Scaling groups (mock)");
+        Ok(self.store.list(self.provider, Some(region), Some(ResourceType::AutoScalingGroup)))
+    }
+
+    async fn get_group(&self, region: &str, id: &str) -> Result<CloudResource> {
+        tracing::info!(provider = "aws", region = region, id = id, "Getting Auto Scaling group (mock)");
+        let uuid = Uuid::parse_str(id)
+            .map_err(|_| CloudError::BadRequest(format!("Invalid UUID: {}", id)))?;
+        self.store
+            .get(uuid)
+            .filter(|r| r.provider == self.provider && r.resource_type == ResourceType::AutoScalingGroup)
+            .ok_or_else(|| CloudError::NotFound(format!("Auto Scaling group {} not found in {}", id, region)))
+    }
+
+    async fn create_group(
+        &self,
+        region: &str,
+        name: &str,
+        min_size: u32,
+        max_size: u32,
+        desired: u32,
+    ) -> Result<CloudResource> {
+        tracing::info!(provider = "aws", region = region, name = name, "Creating Auto Scaling group (mock)");
+        let resource = self.make_resource(
+            ResourceType::AutoScalingGroup,
+            name,
+            region,
+            ResourceStatus::Available,
+            serde_json::json!({"min_size": min_size, "max_size": max_size, "desired_capacity": desired}),
+            HashMap::new(),
+        );
+        self.store.insert(resource.clone());
+        Ok(resource)
+    }
+
+    async fn delete_group(&self, region: &str, id: &str) -> Result<()> {
+        tracing::info!(provider = "aws", region = region, id = id, "Deleting Auto Scaling group (mock)");
+        let uuid = Uuid::parse_str(id)
+            .map_err(|_| CloudError::BadRequest(format!("Invalid UUID: {}", id)))?;
+        if self.store.delete(uuid) {
+            Ok(())
+        } else {
+            Err(CloudError::NotFound(format!("Auto Scaling group {} not found", id)))
+        }
+    }
+
+    async fn set_desired_capacity(&self, region: &str, id: &str, _desired: u32) -> Result<()> {
+        tracing::info!(provider = "aws", region = region, id = id, "Setting Auto Scaling desired capacity (mock)");
+        let uuid = Uuid::parse_str(id)
+            .map_err(|_| CloudError::BadRequest(format!("Invalid UUID: {}", id)))?;
+        if self.store.get(uuid).is_some() {
+            Ok(())
+        } else {
+            Err(CloudError::NotFound(format!("Auto Scaling group {} not found", id)))
+        }
+    }
+}
+
+#[async_trait]
+impl VolumeProvider for AwsProvider {
+    async fn list_volumes(&self, region: &str) -> Result<Vec<CloudResource>> {
+        tracing::info!(provider = "aws", region = region, "Listing EBS volumes (mock)");
+        Ok(self.store.list(self.provider, Some(region), Some(ResourceType::Volume)))
+    }
+
+    async fn create_volume(&self, region: &str, size_gb: i32, volume_type: &str, az: &str) -> Result<CloudResource> {
+        tracing::info!(provider = "aws", region = region, size_gb = size_gb, "Creating EBS volume (mock)");
+        let resource = self.make_resource(
+            ResourceType::Volume,
+            &format!("vol-{}", Uuid::new_v4().to_string().split('-').next().unwrap_or("mock")),
+            region,
+            ResourceStatus::Available,
+            serde_json::json!({"size_gb": size_gb, "volume_type": volume_type, "availability_zone": az, "state": "available"}),
+            HashMap::new(),
+        );
+        self.store.insert(resource.clone());
+        Ok(resource)
+    }
+
+    async fn attach_volume(&self, region: &str, volume_id: &str, instance_id: &str, device: &str) -> Result<()> {
+        tracing::info!(provider = "aws", region = region, volume_id = volume_id, instance_id = instance_id, device = device, "Attaching EBS volume (mock)");
+        let uuid = Uuid::parse_str(volume_id)
+            .map_err(|_| CloudError::BadRequest(format!("Invalid UUID: {}", volume_id)))?;
+        if self.store.get(uuid).is_some() {
+            Ok(())
+        } else {
+            Err(CloudError::NotFound(format!("EBS volume {} not found", volume_id)))
+        }
+    }
+
+    async fn detach_volume(&self, region: &str, volume_id: &str) -> Result<()> {
+        tracing::info!(provider = "aws", region = region, volume_id = volume_id, "Detaching EBS volume (mock)");
+        let uuid = Uuid::parse_str(volume_id)
+            .map_err(|_| CloudError::BadRequest(format!("Invalid UUID: {}", volume_id)))?;
+        if self.store.get(uuid).is_some() {
+            Ok(())
+        } else {
+            Err(CloudError::NotFound(format!("EBS volume {} not found", volume_id)))
+        }
+    }
+
+    async fn delete_volume(&self, region: &str, id: &str) -> Result<()> {
+        tracing::info!(provider = "aws", region = region, id = id, "Deleting EBS volume (mock)");
+        let uuid = Uuid::parse_str(id)
+            .map_err(|_| CloudError::BadRequest(format!("Invalid UUID: {}", id)))?;
+        if self.store.delete(uuid) {
+            Ok(())
+        } else {
+            Err(CloudError::NotFound(format!("EBS volume {} not found", id)))
+        }
+    }
+
+    async fn create_volume_snapshot(&self, region: &str, volume_id: &str, name: &str) -> Result<CloudResource> {
+        tracing::info!(provider = "aws", region = region, volume_id = volume_id, name = name, "Creating EBS snapshot (mock)");
+        let resource = self.make_resource(
+            ResourceType::Snapshot,
+            name,
+            region,
+            ResourceStatus::Available,
+            serde_json::json!({"volume_id": volume_id, "state": "completed"}),
+            HashMap::new(),
+        );
+        self.store.insert(resource.clone());
+        Ok(resource)
     }
 }
